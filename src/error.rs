@@ -20,6 +20,8 @@ pub enum Error {
     /// The compiled program exceeded the set size limit.
     /// The argument is the size limit imposed.
     CompiledTooBig(usize),
+    /// The program uses a feature that is not supported by SkipRegex
+    SkipUnsupported(String),
     /// Hints that destructuring should not be exhaustive.
     ///
     /// This enum may grow additional variants, so this makes sure clients
@@ -34,6 +36,7 @@ impl ::std::error::Error for Error {
         match *self {
             Error::Syntax(ref err) => err,
             Error::CompiledTooBig(_) => "compiled program too big",
+            Error::SkipUnsupported(ref feature) => feature,
             Error::__Nonexhaustive => unreachable!(),
         }
     }
@@ -50,6 +53,9 @@ impl fmt::Display for Error {
             Error::CompiledTooBig(limit) => {
                 write!(f, "Compiled regex exceeds size limit of {} bytes.",
                        limit)
+            }
+            Error::SkipUnsupported(ref feature) => {
+                write!(f, "Skip regex don't support {}", feature)
             }
             Error::__Nonexhaustive => unreachable!(),
         }

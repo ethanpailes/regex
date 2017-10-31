@@ -23,6 +23,7 @@ use error::Error;
 use input::{ByteInput, CharInput};
 use literals::LiteralSearcher;
 use pikevm;
+use skip_pikevm;
 use prog::Program;
 use re_builder::RegexOptions;
 use re_bytes;
@@ -159,6 +160,50 @@ impl ExecBuilder {
     /// `bounded_backtracking` methods.
     pub fn nfa(mut self) -> Self {
         self.match_type = Some(MatchType::Nfa(MatchNfaType::PikeVM));
+        self
+    }
+
+    /// Sets the matching engine to use an automatically selected skip
+    /// matching engine.
+    ///
+    /// A vital invariant of any of the skip engines is that the
+    /// haystack is in the language defined by the regex. If this
+    /// invariant is not maintained, behavior is undefined.
+    ///
+    /// Overrides any previous match type configuration.
+    pub fn skip(mut self) -> Self {
+        self.match_type = Some(MatchType::SkipRegex(MatchSkipRegexType::Auto));
+        self
+    }
+
+    /// Sets the matching engine to use the SkipPikeVM matching engine.
+    ///
+    /// Overrides any previous match type configuration.
+    pub fn skip_pikevm(mut self) -> Self {
+        self.match_type = Some(MatchType::SkipRegex(
+                                MatchSkipRegexType::SkipPikeVM));
+        self
+    }
+
+    /// Sets the matching engine to use the backtracking skip engine.
+    ///
+    /// Overrides any previous match type configuration.
+    pub fn skip_backtrack(mut self) -> Self {
+        self.match_type = Some(MatchType::SkipRegex(
+                                MatchSkipRegexType::SkipBacktrack));
+        self
+    }
+
+    /// Sets the matching engine to use a skip dfa.
+    ///
+    /// The SkipDFA is very fragile, as it is easy for the capture
+    /// states to become part of a compound state, making getting at
+    /// captures impossible.
+    ///
+    /// Overrides any previous match type configuration.
+    pub fn skip_dfa(mut self) -> Self {
+        self.match_type = Some(MatchType::SkipRegex(
+                                MatchSkipRegexType::SkipDfa));
         self
     }
 
@@ -415,6 +460,7 @@ impl<'c> RegularExpression for ExecNoSync<'c> {
                 }
             }
             MatchType::Nfa(ty) => self.shortest_nfa_type(ty, text, start),
+            MatchType::SkipRegex(_) => unreachable!("unimpl"),
             MatchType::Nothing => None,
         }
     }
@@ -463,6 +509,10 @@ impl<'c> RegularExpression for ExecNoSync<'c> {
                 }
             }
             MatchType::Nfa(ty) => self.match_nfa_type(ty, text, start),
+            MatchType::SkipRegex(_) => {
+                debug_assert!(false, "Skip Regex must always match. You should not be asking this question!");
+                true
+            }
             MatchType::Nothing => false,
         }
     }
@@ -506,6 +556,14 @@ impl<'c> RegularExpression for ExecNoSync<'c> {
                 }
             }
             MatchType::Nfa(ty) => self.find_nfa(ty, text, start),
+            MatchType::SkipRegex(ty) => {
+                // It is a logic error to execute a skip regex
+                // on non-matching text, but because of the dotstar
+                // we prepend to regex during compilation, asking
+                // for the match of a skip regex is actually a
+                // coherent question.
+                self.find_skip_dfa(ty, text, start)
+            },
             MatchType::Nothing => None,
             MatchType::DfaMany => {
                 unreachable!("BUG: RegexSet cannot be used with find")
@@ -582,6 +640,9 @@ impl<'c> RegularExpression for ExecNoSync<'c> {
             }
             MatchType::Nfa(ty) => {
                 self.captures_nfa_type(ty, slots, text, start)
+            }
+            MatchType::SkipRegex(ty) => {
+                self.captures_skip_nfa_type(ty, slots, text, start)
             }
             MatchType::Nothing => None,
             MatchType::DfaMany => {
@@ -850,6 +911,16 @@ impl<'c> ExecNoSync<'c> {
         }
     }
 
+    fn find_skip_dfa(
+        &self,
+        ty: MatchSkipRegexType,
+        text: &[u8],
+        start: usize,
+    ) -> Option<(usize, usize)> {
+        let mut slots = [None, None];
+        self.captures_skip_nfa_type(ty, &mut slots, text, start)
+    }
+
     /// Like find_nfa, but fills in captures and restricts the search space
     /// using previously found match information.
     ///
@@ -897,6 +968,32 @@ impl<'c> ExecNoSync<'c> {
             }
         } else {
             None
+        }
+    }
+
+    /// Get the captures with the given skip NFA engine.
+    fn captures_skip_nfa_type(
+        &self,
+        ty: MatchSkipRegexType,
+        slots: &mut [Slot],
+        text: &[u8],
+        start: usize
+    ) -> Option<(usize, usize)> {
+        match ty {
+            MatchSkipRegexType::SkipPikeVM => {
+                skip_pikevm::Fsm::exec(
+                    &self.ro.nfa,
+                    self.cache,
+                    slots,
+                    ByteInput::new(text, self.ro.nfa.only_utf8),
+                    start);
+
+                match (slots[0], slots[1]) {
+                    (Some(s), Some(e)) => Some((s, e)),
+                    _ => None,
+                }
+            }
+            _ => unreachable!("unimpl")
         }
     }
 
@@ -1029,6 +1126,10 @@ impl<'c> ExecNoSync<'c> {
                 }
             }
             Nfa(ty) => self.exec_nfa(ty, matches, &mut [], false, text, start),
+            SkipRegex(_) => {
+                debug_assert!(false, "Skip Regex must always match. You should not be asking this question!");
+                true
+            }
             Nothing => false,
         }
     }
@@ -1128,6 +1229,9 @@ impl ExecReadOnly {
         if let Some(Nfa(_)) = hint {
             return hint.unwrap();
         }
+        if let Some(SkipRegex(_)) = hint {
+            return hint.unwrap();
+        }
         // If the NFA is empty, then we'll never match anything.
         if self.nfa.insts.is_empty() {
             return Nothing;
@@ -1221,6 +1325,8 @@ enum MatchType {
     DfaMany,
     /// An NFA variant.
     Nfa(MatchNfaType),
+    /// A Skip Regex
+    SkipRegex(MatchSkipRegexType),
     /// No match is ever possible, so don't ever try to search.
     Nothing,
 }
@@ -1251,6 +1357,18 @@ enum MatchNfaType {
     PikeVM,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum MatchSkipRegexType {
+    /// Choose between non-Auto alternatives automagically.
+    Auto,
+    /// The SkipPikeVM. Only set in tests.
+    SkipPikeVM,
+    /// The SkipBacktacker. Only set in tests. Unimpl.
+    SkipBacktrack,
+    /// The SkipDfa. Only set in tests. Unimpl.
+    SkipDfa,
+}
+
 /// `ProgramCache` maintains reusable allocations for each matching engine
 /// available to a particular program.
 pub type ProgramCache = RefCell<ProgramCacheInner>;
@@ -1258,6 +1376,7 @@ pub type ProgramCache = RefCell<ProgramCacheInner>;
 #[derive(Clone, Debug)]
 pub struct ProgramCacheInner {
     pub pikevm: pikevm::Cache,
+    pub skip_pikevm: skip_pikevm::Cache,
     pub backtrack: backtrack::Cache,
     pub dfa: dfa::Cache,
     pub dfa_reverse: dfa::Cache,
@@ -1267,6 +1386,7 @@ impl ProgramCacheInner {
     fn new(ro: &ExecReadOnly) -> Self {
         ProgramCacheInner {
             pikevm: pikevm::Cache::new(&ro.nfa),
+            skip_pikevm: skip_pikevm::Cache::new(),
             backtrack: backtrack::Cache::new(&ro.nfa),
             dfa: dfa::Cache::new(&ro.dfa),
             dfa_reverse: dfa::Cache::new(&ro.dfa_reverse),

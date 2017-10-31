@@ -18,6 +18,8 @@ pub type InstPtr = usize;
 pub struct Program {
     /// A sequence of instructions that represents an NFA.
     pub insts: Vec<Inst>,
+    /// A sequence of skip instructions representing the Skip NFA.
+    pub skip_insts: Vec<SkipInst>,
     /// Pointers to each Match instruction in the sequence.
     ///
     /// This is always length 1 unless this program represents a regex set.
@@ -33,6 +35,8 @@ pub struct Program {
     /// expressions. The actual starting point of the program is after the
     /// `.*?`.
     pub start: InstPtr,
+    /// A pointer to the start of the skip instructions. See above.
+    pub skip_start: InstPtr,
     /// A set of equivalence classes for discriminating bytes in the compiled
     /// program.
     pub byte_classes: Vec<u8>,
@@ -80,10 +84,12 @@ impl Program {
     pub fn new() -> Self {
         Program {
             insts: vec![],
+            skip_insts: vec![],
             matches: vec![],
             captures: vec![],
             capture_name_idx: Arc::new(HashMap::new()),
             start: 0,
+            skip_start: 0,
             byte_classes: vec![0; 256],
             only_utf8: true,
             is_bytes: false,
@@ -286,6 +292,78 @@ pub enum Inst {
     /// used in conjunction with Split instructions to implement multi-byte
     /// character classes.
     Bytes(InstBytes),
+}
+
+// TODO(ethan): make this a config option to ExecBuilder
+pub const RUN_QUEUE_RING_SIZE: usize = 16;
+
+/// SkipInst is an instruction code in a Skip Regex program.
+///
+/// SkipInst mostly follows the pattern laid down by `prog.rs::Inst`
+#[derive(Clone, Debug)]
+pub enum SkipInst {
+    /// Match indicates that the program has reached a match state.
+    ///
+    /// See prog.rs::Inst for more details.
+    SkipMatch(usize),
+    /// Save causes the program to save the current location of the input in
+    /// the slot indicated by InstSave.
+    SkipSave(InstSave),
+    /// Split causes the program to diverge to one of two paths in the
+    /// program, preferring goto1 in InstSplit.
+    SkipSplit(InstSplit),
+
+    /// SkipByte requires the regex program to match the character in
+    /// InstSkipByte at the current position in the input. If successful,
+    /// it directs the current thread to skip forward by a fixed number
+    /// of chars.
+    SkipSkipByte(InstSkipByte),
+
+    /// SkipRange requires the current position in the input to fall
+    /// within the given range. The current thread dies if this is not
+    /// true.
+    SkipSkipRanges(InstSkipRanges),
+
+    //
+    // Below are features that I'm not adding to the minimum implimentation.
+    //
+
+    // EmptyLook represents a zero-width assertion in a regex program. A
+    // zero-width assertion does not consume any of the input text.
+    // SkipEmptyLook(InstEmptyLook),
+
+    // Ranges requires the regex program to match the character at the current
+    // position in the input with one of the ranges specified in InstRanges.
+    // SkipRanges(InstRanges),
+
+    // Bytes is like Ranges, except it expresses a single byte range. It is
+    // used in conjunction with Split instructions to implement multi-byte
+    // character classes.
+    // SkipBytes(InstBytes),
+}
+
+/// Representation of the SkipByte instruction.
+#[derive(Clone, Debug)]
+pub struct InstSkipByte {
+    /// The next location to execute in the program if this instruction
+    /// succeeds.
+    pub goto: InstPtr,
+    /// The character to test.
+    pub c: u8,
+    /// The distance to skip forward in the input.
+    pub skip: usize,
+}
+
+/// Representation of the SkipRange instruction.
+#[derive(Clone, Debug)]
+pub struct InstSkipRanges {
+    /// The next location to execute in the program if this instruction
+    /// succeeds.
+    pub goto: InstPtr,
+    /// The set of Ascii scalar value ranges to test.
+    pub ranges: Vec<(u8, u8)>,
+    /// The distance to skip forward in the input.
+    pub skip: usize,
 }
 
 impl Inst {

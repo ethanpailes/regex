@@ -59,23 +59,74 @@ pub struct Cache {
 
 /// An ordered set of NFA states and their captures.
 #[derive(Clone, Debug)]
-struct Threads {
+pub struct Threads {
     /// An ordered set of opcodes (each opcode is an NFA state).
-    set: SparseSet,
+    pub set: SparseSet,
     /// Captures for every NFA state.
     ///
     /// It is stored in row-major order, where the columns are the capture
     /// slots and the rows are the states.
-    caps: Vec<Slot>,
+    pub caps: Vec<Slot>,
     /// The number of capture slots stored per thread. (Every capture has
     /// two slots.)
-    slots_per_thread: usize,
+    pub slots_per_thread: usize,
 }
 
 /// A representation of an explicit stack frame when following epsilon
 /// transitions. This is used to avoid recursion.
+///
+/// DONTCOMMIT:
+/// In a naive implementation, whenever a VM thread follows an NFA epsilon
+/// transition (represented by a jump in our VM bytecode), it pushes
+/// a new thread onto the next list. In fact, because of non-determinism,
+/// it can push n threads to the next list because it must push a new one
+/// for each unique instruction pointer it sees. You can think of the
+/// instructions getting added as an inorder traversal of a binary tree.
+/// That does not quite capture it because this tree often contains
+/// linked lists between the branch points.
+///
+/// Example:
+///
+/// The NFA program:
+///    1: split 2, 3
+///    2: char 'a', goto 5
+///    3: char 'b', goto 4
+///    4: char 'b', goto 5
+///    5: char 'c', goto 6
+///    6: split 1, 7
+///    7: save 0, goto 8
+///    8: char 'x', goto 9
+///    9: save 1, goto 10
+///    10: char 'b', goto 11
+///    11: match
+///
+/// Would give us a treeish traversal starting at 1 and ending with 10 of:
+///
+///         1
+///     2       3
+///     5       4
+///   x   7     x
+///       8
+///       9
+///       10
+///       11
+///
+/// Note the xs. The goto and split instructions can, and very often
+/// do, form cycles. Threads are uniquely identified by their string
+/// pointer (always the same during this process) and instruction pointer,
+/// so we never push the same instruction pointer onto the next list
+/// twice. The locations were this has happened here are marked with
+/// an x. Flattened out, this visit order is:
+///
+///    1 2 5 7 8 9 10 11 3 4
+///
+/// Recursion comes into the picture when you start passing through
+/// save instructions. All threads you spawn in instructions you see
+/// after the save instruction must see the new view of capture groups,
+/// but threads that are siblings of the save instruction rather than
+/// children must not see the new picture.
 #[derive(Clone, Debug)]
-enum FollowEpsilon {
+pub enum FollowEpsilon {
     /// Follow transitions at the given instruction pointer.
     IP(InstPtr),
     /// Restore the capture slot with the given position in the input.
@@ -353,7 +404,7 @@ impl<'r, I: Input> Fsm<'r, I> {
 }
 
 impl Threads {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Threads {
             set: SparseSet::new(0),
             caps: vec![],
@@ -361,7 +412,7 @@ impl Threads {
         }
     }
 
-    fn resize(&mut self, num_insts: usize, ncaps: usize) {
+    pub fn resize(&mut self, num_insts: usize, ncaps: usize) {
         if num_insts == self.set.capacity() {
             return;
         }
@@ -370,7 +421,7 @@ impl Threads {
         self.caps = vec![None; self.slots_per_thread * num_insts];
     }
 
-    fn caps(&mut self, pc: usize) -> &mut [Option<usize>] {
+    pub fn caps(&mut self, pc: usize) -> &mut [Option<usize>] {
         let i = pc * self.slots_per_thread;
         &mut self.caps[i..i + self.slots_per_thread]
     }

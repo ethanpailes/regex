@@ -652,6 +652,8 @@ mod simd_accel;
 mod simd_accel;
 mod sparse;
 
+mod skip_pikevm;
+
 /// The `internal` module exists to support the `regex!` macro and other
 /// suspicious activity, such as testing different matching engines and
 /// supporting the `regex-debug` CLI utility.

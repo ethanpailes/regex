@@ -94,5 +94,9 @@ name = "backtrack-utf8bytes"
 path = "tests/test_backtrack_bytes.rs"
 name = "backtrack-bytes"
 
+[[test]]
+path = "tests/test_skip_pikevm.rs"
+name = "skip-pikevm"
+
 [profile.test]
 debug = true

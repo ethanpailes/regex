@@ -22,6 +22,7 @@ use utf8_ranges::{Utf8Range, Utf8Sequence, Utf8Sequences};
 use prog::{
     Program, Inst, InstPtr, EmptyLook,
     InstSave, InstSplit, InstEmptyLook, InstChar, InstRanges, InstBytes,
+    SkipInst, InstSkipByte, InstSkipRanges, RUN_QUEUE_RING_SIZE
 };
 
 use Error;
@@ -37,7 +38,8 @@ struct Patch {
 /// A compiler translates a regular expression AST to a sequence of
 /// instructions. The sequence of instructions represents an NFA.
 pub struct Compiler {
-    insts: Vec<MaybeInst>,
+    insts: Vec<MaybeInst<Inst, InstHole>>,
+    skip_insts: Vec<MaybeInst<SkipInst, SkipInstHole>>,
     compiled: Program,
     capture_name_idx: HashMap<String, usize>,
     num_exprs: usize,
@@ -54,6 +56,7 @@ impl Compiler {
     pub fn new() -> Self {
         Compiler {
             insts: vec![],
+            skip_insts: vec![],
             compiled: Program::new(),
             capture_name_idx: HashMap::new(),
             num_exprs: 0,
@@ -121,6 +124,10 @@ impl Compiler {
     /// The compiler is guaranteed to succeed unless the program exceeds the
     /// specified size limit. If the size limit is exceeded, then compilation
     /// stops and returns an error.
+    ///
+    /// TODO(ethan): consider hiding skip compilation behind a flag
+    /// like the .nfa() and .dfa() flags. Right now it is just piggybacking
+    /// on the NFA (or actually possibly on both the NFA and the DFA).
     pub fn compile(
         mut self,
         exprs: &[Expr],
@@ -135,27 +142,37 @@ impl Compiler {
     }
 
     fn compile_one(mut self, expr: &Expr) -> result::Result<Program, Error> {
+        println!("Compiling: {:?}", expr);
         // If we're compiling a forward DFA and we aren't anchored, then
         // add a `.*?` before the first capture group.
         // Other matching engines handle this by baking the logic into the
         // matching engine itself.
         let mut dotstar_patch = Patch { hole: Hole::None, entry: 0 };
+        let mut sc_dotstar_patch = Patch { hole: Hole::None, entry: 0 };
         self.compiled.is_anchored_start = expr.is_anchored_start();
         self.compiled.is_anchored_end = expr.is_anchored_end();
         if self.compiled.needs_dotstar() {
             dotstar_patch = try!(self.c_dotstar());
+            sc_dotstar_patch = try!(self.sc_dotstar());
             self.compiled.start = dotstar_patch.entry;
         }
         self.compiled.captures = vec![None];
         let patch = try!(self.c_capture(0, expr));
+        let sc_patch = try!(self.sc_capture(0, expr));
         if self.compiled.needs_dotstar() {
             self.fill(dotstar_patch.hole, patch.entry);
+            self.sc_fill(sc_dotstar_patch.hole, sc_patch.entry);
         } else {
             self.compiled.start = patch.entry;
+            self.compiled.skip_start = sc_patch.entry;
         }
         self.fill_to_next(patch.hole);
         self.compiled.matches = vec![self.insts.len()];
         self.push_compiled(Inst::Match(0));
+
+        let sc_next = self.sc_push_compiled(SkipInst::SkipMatch(0));
+        self.sc_continue(sc_patch, sc_next);
+
         self.compile_finish()
     }
 
@@ -200,6 +217,9 @@ impl Compiler {
     fn compile_finish(mut self) -> result::Result<Program, Error> {
         self.compiled.insts =
             self.insts.into_iter().map(|inst| inst.unwrap()).collect();
+        self.compiled.skip_insts =
+            self.skip_insts.into_iter().map(|si| si.unwrap()).collect();
+        // TODO(ethan): collect compiled skip instructions here
         self.compiled.byte_classes = self.byte_classes.byte_classes();
         self.compiled.capture_name_idx = Arc::new(self.capture_name_idx);
         Ok(self.compiled)
@@ -309,6 +329,50 @@ impl Compiler {
         }
     }
 
+    fn sc(&mut self, expr: &Expr) -> Result {
+        use syntax::Expr::*;
+
+        try!(self.check_size());
+        match *expr {
+            Empty => Ok(Patch { hole: Hole::None, entry: self.insts.len() }),
+            Literal { ref chars, casei } => self.sc_literal(chars, casei),
+            Repeat { ref e, r, greedy } => self.sc_repeat(e, r, greedy),
+            AnyChar => self.sc_class(&[ClassRange {
+                // For now we just support ascii. In the event that we
+                // add unicode support, this range should be fixed to
+                // refelct that.
+                //
+                // TODO(ethan):unicode
+                start: ' ',
+                end: '~'
+                // start: '\x00',
+                // end: '\u{10ffff}',
+            }]),
+            Concat(ref es) => {
+                if self.compiled.is_reverse {
+                    self.sc_concat(es.iter().rev())
+                } else {
+                    self.sc_concat(es)
+                }
+            }
+            Group { ref e, i: None, name: None } => self.sc(e),
+            Group { ref e, i, ref name } => {
+                // it's impossible to have a named capture without an index
+                let i = i.expect("capture index");
+                if i >= self.compiled.captures.len() {
+                    self.compiled.captures.push(name.clone());
+                    if let Some(ref name) = *name {
+                        self.capture_name_idx.insert(name.to_owned(), i);
+                    }
+                }
+                self.sc_capture(2 * i, e)
+            }
+            Alternate(ref es) => self.sc_alternate(&**es),
+            ref e => unreachable!("Unimplimented instruction: {:?}", e),
+        }
+    }
+
+
     fn c_capture(&mut self, first_slot: usize, expr: &Expr) -> Result {
         if self.num_exprs > 1 || self.compiled.is_dfa {
             // Don't ever compile Save instructions for regex sets because
@@ -326,6 +390,24 @@ impl Compiler {
         }
     }
 
+    fn sc_capture(&mut self, first_slot: usize, expr: &Expr) -> Result {
+        if self.num_exprs > 1 || self.compiled.is_dfa {
+            self.sc(expr)
+        } else {
+            let p = self.sc_push_one(SkipInstHole::Save {
+                slot: first_slot
+            });
+
+            let next = try!(self.sc(expr));
+            let p = self.sc_continue(p, next);
+
+            let next = self.sc_push_one(SkipInstHole:: Save {
+                slot: first_slot + 1
+            });
+            Ok(self.sc_continue(p, next))
+        }
+    }
+
     fn c_dotstar(&mut self) -> Result {
         Ok(if !self.compiled.only_utf8() {
             try!(self.c(&Expr::Repeat {
@@ -335,6 +417,23 @@ impl Compiler {
             }))
         } else {
             try!(self.c(&Expr::Repeat {
+                e: Box::new(Expr::AnyChar),
+                r: Repeater::ZeroOrMore,
+                greedy: false,
+            }))
+        })
+    }
+
+    /// compile .*? onto the Skip Regex
+    fn sc_dotstar(&mut self) -> Result {
+        Ok(if !self.compiled.only_utf8() {
+            try!(self.sc(&Expr::Repeat {
+                e: Box::new(Expr::AnyByte),
+                r: Repeater::ZeroOrMore,
+                greedy: false,
+            }))
+        } else {
+            try!(self.sc(&Expr::Repeat {
                 e: Box::new(Expr::AnyChar),
                 r: Repeater::ZeroOrMore,
                 greedy: false,
@@ -358,6 +457,40 @@ impl Compiler {
             hole = p.hole;
         }
         Ok(Patch { hole: hole, entry: entry })
+    }
+
+    fn sc_literal(&mut self, chars: &[char], _casei: bool) -> Result {
+        // TODO(ethan):casei does not support case insensitivity
+        use ::std::ascii::AsciiExt;
+
+        // For now we just support ascii
+        if ! chars.into_iter().all(|c| c.is_ascii()) {
+            // TODO(ethan):unicode
+            return Err(Error::SkipUnsupported(String::from("utf8")));
+        }
+
+        let max_skip = RUN_QUEUE_RING_SIZE - 1;
+
+        let mut skip_start = 0;
+        let mut p = Patch { hole: Hole::None, entry: self.sc_next() };
+        while skip_start < chars.len() {
+            let mut b = [0; 1];
+            chars[skip_start].encode_utf8(&mut b);
+
+            let next = self.sc_push_one(SkipInstHole::Byte {
+                c: b[0],
+                skip: if chars.len() - skip_start > max_skip {
+                          max_skip
+                      } else {
+                          chars.len() - skip_start
+                      }
+            });
+            p = self.sc_continue(p, next);
+
+            skip_start += max_skip;
+        }
+
+        Ok(p)
     }
 
     fn c_char(&mut self, c: char, casei: bool) -> Result {
@@ -387,6 +520,31 @@ impl Compiler {
             };
             Ok(Patch { hole: hole, entry: self.insts.len() - 1 })
         }
+    }
+
+    fn sc_class(&mut self, ranges: &[ClassRange]) -> Result {
+        assert!(!ranges.is_empty());
+        use ::std::ascii::AsciiExt;
+
+        let ranges: Vec<(u8, u8)> = try!(ranges.iter().map(|r| {
+            if !(r.start.is_ascii() && r.end.is_ascii()) {
+                return Err(Error::SkipUnsupported(String::from("utf8")));
+            }
+
+            let mut b1 = [0; 1];
+            r.start.encode_utf8(&mut b1);
+
+            let mut b2 = [0; 1];
+            r.start.encode_utf8(&mut b2);
+
+            Ok((b1[0], b2[0]))
+        }).collect::<result::Result<Vec<(u8, u8)>, Error>>());
+
+        Ok(if ranges.len() == 1 && ranges[0].0 == ranges[0].1 {
+            self.sc_push_one(SkipInstHole::Byte { c: ranges[0].0, skip: 1 })
+        } else {
+            self.sc_push_one(SkipInstHole::Ranges { ranges: ranges, skip: 1 })
+        })
     }
 
     fn c_bytes(&mut self, bytes: &[u8], casei: bool) -> Result {
@@ -466,6 +624,18 @@ impl Compiler {
         Ok(Patch { hole: hole, entry: entry })
     }
 
+    fn sc_concat<'a, I>(&mut self, exprs: I) -> Result
+        where I: IntoIterator<Item=&'a Expr> {
+        // we don't have to do any skip fusion here because the
+        // literal parser has already done that for us.
+        let mut p = Patch { hole: Hole::None, entry: self.sc_next() };
+        for e in exprs.into_iter() {
+            let next = try!(self.sc(e));
+            p = self.sc_continue(p, next);
+        }
+        Ok(p)
+    }
+
     fn c_alternate(&mut self, exprs: &[Expr]) -> Result {
         debug_assert!(
             exprs.len() >= 2, "alternates must have at least 2 exprs");
@@ -491,6 +661,46 @@ impl Compiler {
         Ok(Patch { hole: Hole::Many(holes), entry: first_split_entry })
     }
 
+    /// compile expr1|expr2|expr3| ... |exprn
+    ///
+    /// Each expression is prefixed with a split. One branch
+    /// points to the next expression, while the other points
+    /// to the start of next expression. The tail goto of each
+    /// expression points to the end of the alt.
+    ///
+    /// The last expression is handled a little differently, because
+    /// we don't want to provide a split path around it.
+    fn sc_alternate(&mut self, exprs: &[Expr]) -> Result {
+        debug_assert!(
+            exprs.len() >= 2, "alternates must have at least 2 exprs");
+
+        let mut holes = vec![];
+
+        let mut p = Patch { hole: Hole::None, entry: self.sc_next() };
+        for e in exprs[0..exprs.len() - 1].iter() {
+            let Patch { hole: split_hole, entry: split_entry } =
+                    self.sc_push_split_patch();
+
+            let inner = try!(self.sc(e));
+            let half_split =
+                self.sc_fill_split(split_hole, Some(inner.entry), None);
+            holes.push(inner.hole);
+
+            p = self.sc_continue(p, Patch {
+                hole: half_split,
+                entry: split_entry
+            });
+        }
+
+        // the last expression does not get a branch
+        let last_e = &exprs[exprs.len() - 1];
+        let next = try!(self.sc(last_e));
+        p = self.sc_continue(p, next);
+        holes.push(p.hole);
+
+        Ok(Patch { hole: Hole::Many(holes), entry: p.entry })
+    }
+
     fn c_repeat(
         &mut self,
         expr: &Expr,
@@ -506,6 +716,25 @@ impl Compiler {
             }
             Repeater::Range { min, max: Some(max) } => {
                 self.c_repeat_range(expr, greedy, min, max)
+            }
+        }
+    }
+
+    fn sc_repeat(
+        &mut self,
+        expr: &Expr,
+        kind: Repeater,
+        greedy: bool,
+    ) -> Result {
+        match kind {
+            Repeater::ZeroOrOne => self.sc_repeat_zero_or_one(expr, greedy),
+            Repeater::ZeroOrMore => self.sc_repeat_zero_or_more(expr, greedy),
+            Repeater::OneOrMore => self.sc_repeat_one_or_more(expr, greedy),
+            Repeater::Range { min, max: None } => {
+                self.sc_repeat_range_min_or_more(expr, greedy, min)
+            }
+            Repeater::Range { min, max: Some(max) } => {
+                self.sc_repeat_range(expr, greedy, min, max)
             }
         }
     }
@@ -528,6 +757,34 @@ impl Compiler {
         Ok(Patch { hole: Hole::Many(holes), entry: split_entry })
     }
 
+    /// compile expr? if greedy else expr??
+    ///
+    /// ```ignore
+    ///    *-expr-*
+    ///    |      ^
+    ///    |      |
+    ///    --------
+    /// ```
+    fn sc_repeat_zero_or_one(
+        &mut self,
+        expr: &Expr,
+        greedy: bool,
+    ) -> Result {
+        let Patch { hole: split_hole, entry: split_entry } =
+            self.sc_push_split_patch();
+        let inner = try!(self.sc(expr));
+
+        let split_hole = if greedy {
+            self.sc_fill_split(split_hole, Some(inner.entry), None)
+        } else {
+            self.sc_fill_split(split_hole, None, Some(inner.entry))
+        };
+        Ok(Patch {
+            hole: Hole::Many(vec![split_hole, inner.hole]),
+            entry: split_entry
+        })
+    }
+
     fn c_repeat_zero_or_more(
         &mut self,
         expr: &Expr,
@@ -543,6 +800,37 @@ impl Compiler {
         } else {
             self.fill_split(split, None, Some(entry_rep))
         };
+        Ok(Patch { hole: split_hole, entry: split_entry })
+    }
+
+    /// Compile expr* if greedy else expr*?
+    ///
+    /// ```ignore
+    ///    *-expr-*
+    ///    ^      ^
+    ///    |      |
+    ///    --------
+    /// ```
+    ///
+    fn sc_repeat_zero_or_more(
+        &mut self,
+        expr: &Expr,
+        greedy: bool,
+    ) -> Result {
+        let Patch { hole: split_hole, entry: split_entry} =
+            self.sc_push_split_patch();
+        let inner = try!(self.sc(expr));
+
+        // establish the loopback epsilon transition
+        self.sc_fill(inner.hole, split_entry);
+
+        // extablish the forward epsilon transition
+        let split_hole = if greedy {
+            self.sc_fill_split(split_hole, Some(inner.entry), None)
+        } else {
+            self.sc_fill_split(split_hole, None, Some(inner.entry))
+        };
+
         Ok(Patch { hole: split_hole, entry: split_entry })
     }
 
@@ -563,6 +851,39 @@ impl Compiler {
         Ok(Patch { hole: split_hole, entry: entry_rep })
     }
 
+    /// Compile expr+ if greedy else expr+?
+    ///
+    /// ```ignore
+    ///    *-expr-*
+    ///    ^      |
+    ///    |      |
+    ///    --------
+    /// ```
+    ///
+    fn sc_repeat_one_or_more(
+        &mut self,
+        expr: &Expr,
+        greedy: bool,
+    ) -> Result {
+        let inner = try!(self.sc(expr));
+        let Patch { hole: split_hole, entry: split_entry } =
+            self.sc_push_split_patch();
+
+        // extablish the loopback epsilon transition
+        let split_hole = if greedy {
+            self.sc_fill_split(split_hole, Some(inner.entry), None)
+        } else {
+            self.sc_fill_split(split_hole, None, Some(inner.entry))
+        };
+
+        let patch = self.sc_continue(inner, Patch {
+            hole: split_hole,
+            entry: split_entry,
+        });
+
+        Ok(patch)
+    }
+
     fn c_repeat_range_min_or_more(
         &mut self,
         expr: &Expr,
@@ -574,6 +895,19 @@ impl Compiler {
         let patch_rep = try!(self.c_repeat_zero_or_more(expr, greedy));
         self.fill(patch_concat.hole, patch_rep.entry);
         Ok(Patch { hole: patch_rep.hole, entry: patch_concat.entry })
+    }
+
+    /// Compile expr{min}expr*
+    fn sc_repeat_range_min_or_more(
+        &mut self,
+        expr: &Expr,
+        greedy: bool,
+        min: u32,
+    ) -> Result {
+        let p = try!(self.sc_concat(iter::repeat(expr).take(u32_to_usize(min))));
+
+        let next = try!(self.sc_repeat_zero_or_more(expr, greedy));
+        Ok(self.sc_continue(p, next))
     }
 
     fn c_repeat_range(
@@ -624,6 +958,73 @@ impl Compiler {
         holes.push(prev_hole);
         Ok(Patch { hole: Hole::Many(holes), entry: initial_entry })
     }
+
+    /// Compile expr{min,max}
+    ///
+    /// ```ignore
+    ///                  min-reps           max-reps
+    ///    *-expr-expr-...-expr-expr-expr-...-expr-*
+    ///                         |    |             ^
+    ///                         |    |             |
+    ///                         |    --------------|
+    ///                         |                  |
+    ///                         -------------------|
+    /// ```
+    fn sc_repeat_range(
+        &mut self,
+        expr: &Expr,
+        greedy: bool,
+        min: u32,
+        max: u32,
+    ) -> Result {
+        let (min, max) = (u32_to_usize(min), u32_to_usize(max));
+        let mut p = try!(self.sc_concat(iter::repeat(expr).take(min)));
+
+        if min == max {
+            return Ok(p);
+        }
+
+        let mut holes = vec![];
+        for _ in min..max {
+            let split = self.sc_push_split_patch();
+            let expr_next = try!(self.sc(expr));
+            if greedy {
+                holes.push(self.sc_fill_split(
+                        split.hole, Some(expr_next.entry), None));
+            } else {
+                holes.push(self.sc_fill_split(
+                        split.hole, None, Some(expr_next.entry)));
+            }
+
+            p = self.sc_continue(p, Patch {
+                hole: expr_next.hole,
+                entry: split.entry
+            });
+        }
+        holes.push(p.hole);
+
+        Ok(Patch { hole: Hole::Many(holes), entry: p.entry })
+    }
+
+    fn sc_fill(&mut self, hole: Hole, goto: InstPtr) {
+        match hole {
+            Hole::None => {}
+            Hole::One(pc) => {
+                self.skip_insts[pc].fill(goto);
+            }
+            Hole::Many(holes) => {
+                for hole in holes {
+                    self.sc_fill(hole, goto);
+                }
+            }
+        }
+    }
+
+    fn sc_next(&self) -> InstPtr {
+        self.skip_insts.len()
+    }
+
+    // sc_fill_to_next(h) is self.sc_fill(h, self.sc_next())
 
     fn fill(&mut self, hole: Hole, goto: InstPtr) {
         match hole {
@@ -686,6 +1087,73 @@ impl Compiler {
         }
     }
 
+    fn sc_fill_split(
+        &mut self,
+        hole: Hole,
+        goto1: Option<InstPtr>,
+        goto2: Option<InstPtr>,
+    ) -> Hole {
+        match hole {
+            Hole::None => Hole::None,
+            Hole::One(pc) => {
+                match (goto1, goto2) {
+                    (Some(goto1), Some(goto2)) => {
+                        self.skip_insts[pc].fill_split(goto1, goto2);
+                        Hole::None
+                    }
+                    (Some(goto1), None) => {
+                        self.skip_insts[pc].half_fill_split_goto1(goto1);
+                        Hole::One(pc)
+                    }
+                    (None, Some(goto2)) => {
+                        self.skip_insts[pc].half_fill_split_goto2(goto2);
+                        Hole::One(pc)
+                    }
+                    (None, None) => unreachable!("at least one of the split \
+                                                  holes must be filled"),
+                }
+            }
+            Hole::Many(holes) => {
+                let mut new_holes = vec![];
+                for hole in holes {
+                    new_holes.push(self.sc_fill_split(hole, goto1, goto2));
+                }
+                if new_holes.is_empty() {
+                    Hole::None
+                } else if new_holes.len() == 1 {
+                    new_holes.pop().unwrap()
+                } else {
+                    Hole::Many(new_holes)
+                }
+            }
+        }
+    }
+
+    fn sc_push_compiled(&mut self, inst: SkipInst) -> Patch {
+        let entry = self.sc_next();
+        self.skip_insts.push(MaybeInst::Compiled(inst));
+        Patch { hole: Hole::None, entry: entry }
+    }
+
+    /// Push a single instruction, returning the patch describing
+    /// it. Returns a patch for easy composability with sc_continue.
+    fn sc_push_one(&mut self, inst: SkipInstHole) -> Patch {
+        let hole = self.sc_next();
+        self.skip_insts.push(MaybeInst::Uncompiled(inst));
+        Patch { hole: Hole::One(hole), entry: hole }
+    }
+
+    /// Compile the given instruction and fill the given hole with
+    /// the new instruction.
+    fn sc_continue(
+        &mut self,
+        last: Patch,
+        next: Patch,
+    ) -> Patch {
+        self.sc_fill(last.hole, next.entry);
+        Patch { hole: next.hole, entry: last.entry }
+    }
+
     fn push_compiled(&mut self, inst: Inst) {
         self.insts.push(MaybeInst::Compiled(inst));
     }
@@ -702,10 +1170,20 @@ impl Compiler {
         Hole::One(hole)
     }
 
+    /// Push a new split patch onto the skip instruction list
+    fn sc_push_split_patch(&mut self) -> Patch {
+        let split_entry = self.sc_next();
+        self.skip_insts.push(MaybeInst::Split);
+        Patch { entry: split_entry, hole: Hole::One(split_entry) }
+    }
+
     fn check_size(&self) -> result::Result<(), Error> {
         use std::mem::size_of;
 
-        if self.insts.len() * size_of::<Inst>() > self.size_limit {
+        let size = (self.insts.len() * size_of::<Inst>())
+                 + (self.skip_insts.len() * size_of::<SkipInst>());
+
+        if size > self.size_limit {
             Err(Error::CompiledTooBig(self.size_limit))
         } else {
             Ok(())
@@ -721,15 +1199,15 @@ enum Hole {
 }
 
 #[derive(Clone, Debug)]
-enum MaybeInst {
-    Compiled(Inst),
-    Uncompiled(InstHole),
+enum MaybeInst<I, H> {
+    Compiled(I),
+    Uncompiled(H),
     Split,
     Split1(InstPtr),
     Split2(InstPtr),
 }
 
-impl MaybeInst {
+impl MaybeInst<Inst, InstHole> {
     fn fill(&mut self, goto: InstPtr) {
         let filled = match *self {
             MaybeInst::Uncompiled(ref inst) => inst.fill(goto),
@@ -783,6 +1261,10 @@ impl MaybeInst {
     }
 }
 
+trait FillTo<Tgt> {
+    fn fill(&self, goto: InstPtr) -> Tgt;
+}
+
 #[derive(Clone, Debug)]
 enum InstHole {
     Save { slot: usize },
@@ -792,7 +1274,7 @@ enum InstHole {
     Bytes { start: u8, end: u8 },
 }
 
-impl InstHole {
+impl FillTo<Inst> for InstHole {
     fn fill(&self, goto: InstPtr) -> Inst {
         match *self {
             InstHole::Save { slot } => Inst::Save(InstSave {
@@ -816,6 +1298,92 @@ impl InstHole {
                 start: start,
                 end: end,
             }),
+        }
+    }
+}
+
+// This code duplication is gross, but I didn't want to keep mucking
+// about with higher kinded types. TODO(ethan): refactor.
+impl MaybeInst<SkipInst, SkipInstHole> {
+    fn fill(&mut self, goto: InstPtr) -> () {
+        let patched = match *self {
+            MaybeInst::Uncompiled(ref si) => si.fill(goto),
+            MaybeInst::Split1(goto1) => {
+                SkipInst::SkipSplit(InstSplit { goto1: goto1, goto2: goto })
+            },
+            MaybeInst::Split2(goto2) => {
+                SkipInst::SkipSplit(InstSplit { goto1: goto, goto2: goto2 })
+            },
+            _ => unreachable!("not all instructions were compiled! \
+                               found uncompiled instruction: {:?}", self),
+        };
+        *self = MaybeInst::Compiled(patched);
+    }
+
+    fn fill_split(&mut self, goto1: InstPtr, goto2: InstPtr) {
+        let filled = match *self {
+            MaybeInst::Split => {
+                SkipInst::SkipSplit(InstSplit { goto1: goto1, goto2: goto2 })
+            }
+            _ => unreachable!("must be called on Split instruction, \
+                               instead it was called on: {:?}", self),
+        };
+        *self = MaybeInst::Compiled(filled);
+    }
+
+    fn half_fill_split_goto1(&mut self, goto1: InstPtr) {
+        let half_filled = match *self {
+            MaybeInst::Split => goto1,
+            _ => unreachable!("must be called on Split instruction, \
+                               instead it was called on: {:?}", self),
+        };
+        *self = MaybeInst::Split1(half_filled);
+    }
+
+    fn half_fill_split_goto2(&mut self, goto2: InstPtr) {
+        let half_filled = match *self {
+            MaybeInst::Split => goto2,
+            _ => unreachable!("must be called on Split instruction, \
+                               instead it was called on: {:?}", self),
+        };
+        *self = MaybeInst::Split2(half_filled);
+    }
+
+    fn unwrap(self) -> SkipInst {
+        match self {
+            MaybeInst::Compiled(inst) => inst,
+            _ => unreachable!("must be called on a compiled instruction, \
+                               instead it was called on: {:?}", self),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+enum SkipInstHole {
+    Save { slot: usize },
+    Byte { c: u8, skip: usize },
+    Ranges { ranges: Vec<(u8, u8)>, skip: usize },
+}
+
+impl FillTo<SkipInst> for SkipInstHole {
+    fn fill(&self, goto: InstPtr) -> SkipInst {
+        match *self {
+            SkipInstHole::Save { slot } => SkipInst::SkipSave(InstSave {
+                goto: goto,
+                slot: slot,
+            }),
+            SkipInstHole::Byte { c, skip } =>
+                SkipInst::SkipSkipByte(InstSkipByte {
+                    goto: goto,
+                    c: c,
+                    skip: skip,
+                }),
+            SkipInstHole::Ranges { ref ranges, skip } =>
+                SkipInst::SkipSkipRanges(InstSkipRanges {
+                    goto: goto,
+                    ranges: ranges.clone(),
+                    skip: skip,
+                }),
         }
     }
 }
