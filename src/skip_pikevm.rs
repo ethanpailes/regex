@@ -61,6 +61,9 @@ struct RunQueue {
     next_thread: usize,
 }
 
+/// The ring-buffer run queue employed by the skip pikeVM engine.
+/// This can be thought of as a generalization of the occilating
+/// clist and nlist lists in the normal pikeVM.
 impl RunQueue {
     fn new() -> Self {
         let mut qs = Vec::with_capacity(RUN_QUEUE_RING_SIZE);
@@ -410,25 +413,6 @@ impl<'r, I: Input> Fsm<'r, I> {
             }
         }
     }
-
-    // Match indicates that the program has reached a match state.
-    //
-    // See prog.rs::Inst for more details.
-    // SkipMatch(usize),
-    //
-    // Save causes the program to save the current location of the input in
-    // the slot indicated by InstSave.
-    // SkipSave(InstSave),
-    //
-    // Split causes the program to diverge to one of two paths in the
-    // program, preferring goto1 in InstSplit.
-    // SkipSplit(InstSplit),
-    //
-    // Skip requires the regex program to match the character in InstSkip at
-    // the current position in the input. If successful, it directs the
-    // current thread to skip forward by a fixed number of chars.
-    // SkipSkipByte(InstSkipByte),
-
 }
 
 // TODO(ethan): The normal bounded backtracker is faster in small cases
@@ -437,6 +421,7 @@ impl<'r, I: Input> Fsm<'r, I> {
 //              exponential (aka on large inputs). After finishing the
 //              SkipPikeVM, I should see about implimenting a
 //              SkipBoundedBacktracker.
+#[cfg(test)]
 mod tests {
     use super::{RunQueue, RUN_QUEUE_RING_SIZE};
 
