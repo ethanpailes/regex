@@ -65,7 +65,12 @@ struct RunQueue {
 /// This can be thought of as a generalization of the occilating
 /// clist and nlist lists in the normal pikeVM.
 impl RunQueue {
+    // The bitmask for index wrapping.
+    const QUEUE_OFFSET_MASK: usize = RUN_QUEUE_RING_SIZE - 1;
+
     fn new() -> Self {
+        debug_assert!(RUN_QUEUE_RING_SIZE % 2 == 0);
+
         let mut qs = Vec::with_capacity(RUN_QUEUE_RING_SIZE);
         for _ in 0..RUN_QUEUE_RING_SIZE {
             qs.push(Threads::new());
@@ -158,7 +163,8 @@ impl RunQueue {
         self.next_thread = 0;
 
         while self.thread_queues[self.current_queue].set.is_empty() {
-            self.current_queue = (self.current_queue + 1) % RUN_QUEUE_RING_SIZE;
+            self.current_queue =
+                (self.current_queue + 1) & Self::QUEUE_OFFSET_MASK;
             self.current_string_offset += 1;
 
             if self.current_queue == start {
@@ -168,16 +174,15 @@ impl RunQueue {
         true
     }
 
+    /// Convert a stack pointer into an offset into the ring buffer of Threads
     #[inline]
     fn _sp_to_offset(&self, sp: usize) -> usize {
         // We had better not be trying to index futher ahead than the
         // ring buffer can handle.
         debug_assert!((sp - self.current_string_offset) < RUN_QUEUE_RING_SIZE);
 
-        // TODO(ethan): check that this really compiles down to a bitshift.
-        // when RUN_QUEUE_RING_SIZE is a multiple of 2
         ((sp - self.current_string_offset) + self.current_queue)
-            % RUN_QUEUE_RING_SIZE
+            & Self::QUEUE_OFFSET_MASK
     }
 }
 
@@ -283,7 +288,12 @@ impl<'r, I: Input> Fsm<'r, I> {
         slots: &mut [Slot],
     ) -> bool {
         use prog::SkipInst::*;
-        trace!("step: (ip={} sp={})", ip, sp);
+        trace!("step: (ip={} sp={}) inst={}", ip, sp,
+               if ip < self.prog.skip_insts.len() {
+                   format!("{:?}", self.prog.skip_insts[ip])
+               } else {
+                   String::from("<END OF INSTRUCTIONS>")
+               });
 
         match self.prog.skip_insts[ip] {
             SkipMatch(_) => { // same as normal pikevm
@@ -308,6 +318,8 @@ impl<'r, I: Input> Fsm<'r, I> {
 
                 match self.prog.skip_insts[ip] {
                     SkipSkipByte(ref inst) => {
+                        trace!("step: comparing byte={} c={}",
+                               self.input.as_bytes()[sp], inst.c);
                         if inst.c == self.input.as_bytes()[sp] {
                             self.add(run_queue, ip, inst.goto, sp + inst.skip);
                         }
@@ -328,6 +340,7 @@ impl<'r, I: Input> Fsm<'r, I> {
     }
 
     /// Very simmilar to the normal PikeVM add.
+    #[inline]
     fn add(
         &mut self,
         run_queue: &mut RunQueue,
@@ -362,6 +375,7 @@ impl<'r, I: Input> Fsm<'r, I> {
         }
     }
 
+    #[inline]
     fn add_step(
         &mut self,
         run_queue: &mut RunQueue,
@@ -421,6 +435,8 @@ impl<'r, I: Input> Fsm<'r, I> {
 //              exponential (aka on large inputs). After finishing the
 //              SkipPikeVM, I should see about implimenting a
 //              SkipBoundedBacktracker.
+
+
 #[cfg(test)]
 mod tests {
     use super::{RunQueue, RUN_QUEUE_RING_SIZE};

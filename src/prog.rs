@@ -295,7 +295,9 @@ pub enum Inst {
 }
 
 // TODO(ethan): make this a config option to ExecBuilder
-pub const RUN_QUEUE_RING_SIZE: usize = 2;
+// The default value of 64 has been choosen by fairly
+// haphazard benchmarking.
+pub const RUN_QUEUE_RING_SIZE: usize = 64;
 
 /// SkipInst is an instruction code in a Skip Regex program.
 ///
@@ -324,22 +326,10 @@ pub enum SkipInst {
     /// true.
     SkipSkipRanges(InstSkipRanges),
 
-    //
-    // Below are features that I'm not adding to the minimum implimentation.
-    //
-
-    // EmptyLook represents a zero-width assertion in a regex program. A
-    // zero-width assertion does not consume any of the input text.
-    // SkipEmptyLook(InstEmptyLook),
-
-    // Ranges requires the regex program to match the character at the current
-    // position in the input with one of the ranges specified in InstRanges.
-    // SkipRanges(InstRanges),
-
-    // Bytes is like Ranges, except it expresses a single byte range. It is
-    // used in conjunction with Split instructions to implement multi-byte
-    // character classes.
-    // SkipBytes(InstBytes),
+    // TODO(ethan):opt add a SkipScanByte instruction which tells
+    // the VM to just scan forward in the input to a specific
+    // char. Use benchmark driven development to see if I can
+    // speed up /.*(a).*/ on large input.
 }
 
 /// Representation of the SkipByte instruction.

@@ -146,7 +146,7 @@ impl Compiler {
         // add a `.*?` before the first capture group.
         // Other matching engines handle this by baking the logic into the
         // matching engine itself.
-        println!("Compiling: {:?}", expr);
+        // println!("Compiling: {:?}", expr);
         let mut dotstar_patch = Patch { hole: Hole::None, entry: 0 };
         let mut sc_dotstar_patch = Patch { hole: Hole::None, entry: 0 };
         self.compiled.is_anchored_start = expr.is_anchored_start();

@@ -50,6 +50,11 @@ pub use regex::bytes::Regex;
 #[cfg(feature = "re-tcl")]
 pub use ffi::tcl::Regex;
 
+#[cfg(feature = "re-rust-bytes")]
+pub use regex::bytes::RegexBuilder;
+#[cfg(feature = "re-rust")]
+pub use regex::RegexBuilder;
+
 // Usage: regex!(pattern)
 //
 // Builds a ::Regex from a borrowed string. This is used in every regex
@@ -249,7 +254,10 @@ macro_rules! bench_find {
 macro_rules! bench_captures {
     ($name:ident, $pattern:expr, $count:expr, $haystack:expr) => {
 
-        #[cfg(feature = "re-rust")]
+        #[cfg(any(
+              feature = "re-rust",
+              feature = "re-rust-bytes",
+         ))]
         #[bench]
         fn $name(b: &mut Bencher) {
             use std::sync::Mutex;
