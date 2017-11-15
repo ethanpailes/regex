@@ -295,7 +295,7 @@ pub enum Inst {
 }
 
 // TODO(ethan): make this a config option to ExecBuilder
-pub const RUN_QUEUE_RING_SIZE: usize = 16;
+pub const RUN_QUEUE_RING_SIZE: usize = 2;
 
 /// SkipInst is an instruction code in a Skip Regex program.
 ///

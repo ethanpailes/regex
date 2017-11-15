@@ -20,7 +20,7 @@ use re_trait::{Slot};
 use exec::ProgramCache;
 
 // Flip to true for debugging
-const TRACE: bool = true;
+const TRACE: bool = false;
 macro_rules! trace {
     ($($tts:tt)*) => {
         if TRACE {
@@ -269,7 +269,7 @@ impl<'r, I: Input> Fsm<'r, I> {
                 break;
             }
         }
-        println!("slots={:?}", slots);
+        trace!("slots={:?}", slots);
     }
 
     // Step is the guy who actually does all the work.

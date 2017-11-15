@@ -365,7 +365,17 @@ impl ExecBuilder {
             suffixes: LiteralSearcher::suffixes(suffixes),
             match_type: MatchType::Nothing,
         };
-        ro.match_type = ro.choose_match_type(self.match_type);
+
+        let match_hint = 
+            if self.options.skip_mode {
+                // TODO(ethan): switch this to Auto once more than one
+                // backend is implimented.
+                self.match_type.or(
+                    Some(MatchType::SkipRegex(MatchSkipRegexType::SkipPikeVM)))
+            } else {
+                self.match_type
+            };
+        ro.match_type = ro.choose_match_type(match_hint);
 
         let ro = Arc::new(ro);
         Ok(Exec { ro: ro, cache: CachedThreadLocal::new() })
@@ -1226,11 +1236,10 @@ impl Clone for Exec {
 impl ExecReadOnly {
     fn choose_match_type(&self, hint: Option<MatchType>) -> MatchType {
         use self::MatchType::*;
-        if let Some(Nfa(_)) = hint {
-            return hint.unwrap();
-        }
-        if let Some(SkipRegex(_)) = hint {
-            return hint.unwrap();
+        match hint {
+            Some(Nfa(_)) => return hint.unwrap(),
+            Some(SkipRegex(_)) => return hint.unwrap(),
+            _ => {}
         }
         // If the NFA is empty, then we'll never match anything.
         if self.nfa.insts.is_empty() {

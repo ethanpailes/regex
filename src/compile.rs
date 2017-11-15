@@ -142,11 +142,11 @@ impl Compiler {
     }
 
     fn compile_one(mut self, expr: &Expr) -> result::Result<Program, Error> {
-        println!("Compiling: {:?}", expr);
         // If we're compiling a forward DFA and we aren't anchored, then
         // add a `.*?` before the first capture group.
         // Other matching engines handle this by baking the logic into the
         // matching engine itself.
+        println!("Compiling: {:?}", expr);
         let mut dotstar_patch = Patch { hole: Hole::None, entry: 0 };
         let mut sc_dotstar_patch = Patch { hole: Hole::None, entry: 0 };
         self.compiled.is_anchored_start = expr.is_anchored_start();
@@ -348,6 +348,7 @@ impl Compiler {
                 // start: '\x00',
                 // end: '\u{10ffff}',
             }]),
+            AnyByte => self.sc_class_bytes(&[ByteRange { start: 0, end: 0xFF, }]),
             Concat(ref es) => {
                 if self.compiled.is_reverse {
                     self.sc_concat(es.iter().rev())
@@ -599,6 +600,19 @@ impl Compiler {
         }));
         self.fill(prev_hole, next);
         Ok(Patch { hole: Hole::Many(holes), entry: first_split_entry })
+    }
+
+    fn sc_class_bytes(&mut self, ranges: &[ByteRange]) -> Result {
+        debug_assert!(!ranges.is_empty());
+
+        let ranges: Vec<(u8, u8)> = 
+            ranges.iter().map(|r| (r.start, r.end)).collect();
+
+        Ok(if ranges.len() == 1 && ranges[0].0 == ranges[0].1 {
+            self.sc_push_one(SkipInstHole::Byte { c: ranges[0].0, skip: 1 })
+        } else {
+            self.sc_push_one(SkipInstHole::Ranges { ranges: ranges, skip: 1 })
+        })
     }
 
     fn c_empty_look(&mut self, look: EmptyLook) -> Result {

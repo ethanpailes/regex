@@ -21,6 +21,7 @@ pub struct RegexOptions {
     pub swap_greed: bool,
     pub ignore_whitespace: bool,
     pub unicode: bool,
+    pub skip_mode: bool,
 }
 
 impl Default for RegexOptions {
@@ -35,6 +36,7 @@ impl Default for RegexOptions {
             swap_greed: false,
             ignore_whitespace: false,
             unicode: true,
+            skip_mode: false,
         }
     }
 }
@@ -161,6 +163,16 @@ impl RegexBuilder {
     /// specified here.
     pub fn dfa_size_limit(&mut self, limit: usize) -> &mut RegexBuilder {
         self.0.dfa_size_limit = limit;
+        self
+    }
+
+    /// Set the regex to operate in skip mode
+    ///
+    /// This may speed up parsing of capture groups. It is a logic
+    /// error to execute a skip mode regex on input that does not
+    /// match.
+    pub fn skip_mode(&mut self, mode: bool) -> &mut RegexBuilder {
+        self.0.skip_mode = mode;
         self
     }
 }

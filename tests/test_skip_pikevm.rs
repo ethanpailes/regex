@@ -1,6 +1,8 @@
 
 extern crate regex;
 
+use std::iter::repeat;
+
 // There is only one valid question to ask a Skip Regex:
 //    Given that this entire haystack matches, what are the capture
 //    groups?
@@ -12,12 +14,9 @@ extern crate regex;
 
 macro_rules! spike_re {
     ($re:expr) => {{
-        use regex::internal::ExecBuilder;
-        ExecBuilder::new($re)
-            .skip_pikevm()
-            .build()
-            .map(|e| e.into_byte_regex())
-            .unwrap()
+        // use regex::internal::ExecBuilder;
+        use regex::bytes::RegexBuilder;
+        RegexBuilder::new($re).skip_mode(true).build().unwrap()
     }}
 }
 
@@ -83,4 +82,15 @@ fn spike_kleene_star() {
 
     let caps = re.captures("bbbc".as_bytes()).unwrap();
     assert_eq!("bbb".as_bytes(), &caps[1]);
+}
+
+#[test]
+fn spike_two_rep_caps() {
+    let re = spike_re!("(aaaa)(bbbbbb)*");
+    let haystack = format!("{}{}",
+                      String::from("aaaa"),
+                      repeat("bbbbbb").take(100).collect::<String>());
+    let caps = re.captures(haystack.as_bytes()).unwrap();
+    assert_eq!(haystack.as_bytes(), &caps[0]);
+    assert_eq!("bbbbbb".as_bytes(), &caps[2]);
 }
