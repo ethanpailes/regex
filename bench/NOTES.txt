@@ -1,0 +1,12 @@
+
+I can probably do this in much fewer LOC by just modifying
+the exiting compiler and pikevm to also be able to handle
+skips.
+
+  Char, Ranges and whatnot get two new fields
+    skip: usize
+    skip_goto: usize
+
+  The pikevm can be run in skip mode which uses those two
+  new fields. I need to do some trait magic to avoid introducing
+  performance regressions from unknown calls.
