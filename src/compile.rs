@@ -343,12 +343,25 @@ impl Compiler {
                 // refelct that.
                 //
                 // TODO(ethan):unicode
-                start: ' ',
-                end: '~'
-                // start: '\x00',
-                // end: '\u{10ffff}',
+                start: '\x00',
+                end: '\x7F'
             }]),
-            AnyByte => self.sc_class_bytes(&[ByteRange { start: 0, end: 0xFF, }]),
+
+            // TODO(ethan):unicode
+            AnyCharNoNL => self.sc_class(&[ClassRange {
+                start: '\x00',
+                end: '\x09'
+            }, ClassRange { // ranges are inclusive on both ends
+                start: '\x0B',
+                end: '\x7F'
+            }]),
+            AnyByte => self.sc_class_bytes(&[
+                ByteRange { start: 0, end: 0xFF, }
+            ]),
+            AnyByteNoNL => self.sc_class_bytes(&[
+                ByteRange { start: 0x00, end: 0x09, },
+                ByteRange { start: 0x0B, end: 0xFF, }
+            ]),
             Concat(ref es) => {
                 if self.compiled.is_reverse {
                     self.sc_concat(es.iter().rev())
@@ -536,7 +549,7 @@ impl Compiler {
             r.start.encode_utf8(&mut b1);
 
             let mut b2 = [0; 1];
-            r.start.encode_utf8(&mut b2);
+            r.end.encode_utf8(&mut b2);
 
             Ok((b1[0], b2[0]))
         }).collect::<result::Result<Vec<(u8, u8)>, Error>>());

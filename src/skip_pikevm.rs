@@ -339,7 +339,7 @@ impl<'r, I: Input> Fsm<'r, I> {
         }
     }
 
-    /// Very simmilar to the normal PikeVM add.
+    /// Very similar to the normal PikeVM add.
     #[inline]
     fn add(
         &mut self,

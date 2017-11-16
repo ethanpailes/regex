@@ -94,3 +94,12 @@ fn spike_two_rep_caps() {
     assert_eq!(haystack.as_bytes(), &caps[0]);
     assert_eq!("bbbbbb".as_bytes(), &caps[2]);
 }
+
+#[test]
+fn spike_dotstar() {
+    let re = spike_re!(".*(a)");
+    let haystack = "bbbbbbbba";
+    let caps = re.captures(haystack.as_bytes()).unwrap();
+    assert_eq!(haystack.as_bytes(), &caps[0]);
+    assert_eq!("a".as_bytes(), &caps[1]);
+}

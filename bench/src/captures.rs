@@ -49,6 +49,11 @@ bench_both!(cap_reg_large, cap_skip_large,
                     repeat("cccc").take(100).collect::<String>()));
 
 
+bench_both!(cap_reg_leading_dotstar, cap_skip_leading_dotstar,
+                ".*(aaaa)", 1,
+                format!("{}aaaa",
+                        repeat("b").take(1000).collect::<String>()));
+
 // This guy has a very strange off-by-one error that I can't
 // reproduce when I put it in a test.
 /*
