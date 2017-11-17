@@ -31,9 +31,6 @@ macro_rules! bench_both {
 bench_captures!(cap_aaaaaaaa, Regex::new("aaaa(bbbb)cccc").unwrap(), 1,
                 String::from("aaaabbbbcccc"));
 
-// 360 / 440
-//
-// I suspect I'm loosing out on RunQueue overhead primarily.
 bench_both!(cap_reg_small, cap_skip_small, "aaaa(bbbb)cccc", 1,
                 String::from("aaaabbbbcccc"));
 
@@ -52,7 +49,7 @@ bench_both!(cap_reg_large, cap_skip_large,
 bench_both!(cap_reg_leading_dotstar, cap_skip_leading_dotstar,
                 ".*(aaaa)", 1,
                 format!("{}aaaa",
-                        repeat("b").take(1000).collect::<String>()));
+                        repeat("b").take(10).collect::<String>()));
 
 // This guy has a very strange off-by-one error that I can't
 // reproduce when I put it in a test.

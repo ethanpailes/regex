@@ -326,6 +326,15 @@ pub enum SkipInst {
     /// true.
     SkipSkipRanges(InstSkipRanges),
 
+    // TODO(ethan): if this ends up getting us a win, try benchmarking
+    //              it alone. See about adding it to the normal engine
+    //              for a speedup.
+    /// ScanLiteral tells the regex engine that it is safe to scan
+    /// forward until it sees the given literal. This skip strategy
+    /// is meant as an optimization to speed up kleene star (especially
+    /// dotstars).
+    SkipScanLiteral(InstScanLiteral),
+
     // TODO(ethan):opt add a SkipScanByte instruction which tells
     // the VM to just scan forward in the input to a specific
     // char. Use benchmark driven development to see if I can
@@ -355,6 +364,17 @@ pub struct InstSkipRanges {
     /// The distance to skip forward in the input.
     pub skip: usize,
 }
+
+/// Representation of the InstScanLiteral instruction.
+#[derive(Clone, Debug)]
+pub struct InstScanLiteral {
+    /// The next location to execute in the program if this instruction
+    /// succeeds.
+    pub goto: InstPtr,
+    /// The literal to scan forward in the input for.
+    pub literal: LiteralSearcher,
+}
+
 
 impl Inst {
     /// Returns true if and only if this is a match instruction.

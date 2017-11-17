@@ -314,6 +314,8 @@ impl SingleByteSet {
         }
     }
 
+    /// Construct a SingleByteSet out of the leading bytes of
+    /// the given literals in order to support forward search.
     fn prefixes(lits: &syntax::Literals) -> SingleByteSet {
         let mut sset = SingleByteSet::new();
         for lit in lits.literals() {
@@ -331,6 +333,8 @@ impl SingleByteSet {
         sset
     }
 
+    /// Construct a SingleByteSet out of the trailing bytes of
+    /// the given literals in order to support backwards search.
     fn suffixes(lits: &syntax::Literals) -> SingleByteSet {
         let mut sset = SingleByteSet::new();
         for lit in lits.literals() {
@@ -437,7 +441,7 @@ impl SingleSearch {
         }
         for &b in &pat {
             if rare1 == rare2 {
-                rare2 = b
+                rare2 = b;
             } else if b != rare1 && freq_rank(b) < freq_rank(rare2) {
                 rare2 = b;
             }

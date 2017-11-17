@@ -15,15 +15,18 @@ use std::sync::Arc;
 
 use syntax::{
     Expr, Repeater, CharClass, ClassRange, ByteClass, ByteRange,
-    is_word_byte,
+    is_word_byte, Literals, Lit
 };
 use utf8_ranges::{Utf8Range, Utf8Sequence, Utf8Sequences};
 
 use prog::{
     Program, Inst, InstPtr, EmptyLook,
     InstSave, InstSplit, InstEmptyLook, InstChar, InstRanges, InstBytes,
-    SkipInst, InstSkipByte, InstSkipRanges, RUN_QUEUE_RING_SIZE
+    SkipInst, InstSkipByte, InstSkipRanges, RUN_QUEUE_RING_SIZE,
+    InstScanLiteral
 };
+
+use literals::{LiteralSearcher};
 
 use Error;
 
@@ -653,13 +656,99 @@ impl Compiler {
 
     fn sc_concat<'a, I>(&mut self, exprs: I) -> Result
         where I: IntoIterator<Item=&'a Expr> {
+        use syntax::Expr::*;
+
         // we don't have to do any skip fusion here because the
         // literal parser has already done that for us.
         let mut p = Patch { hole: Hole::None, entry: self.sc_next() };
+
+        // We don't immediatly compile repetitions because they might
+        // have a terminator that we can scan forward to. Instead we
+        // accumulate them in a vector.
+        let mut repeats = vec![];
         for e in exprs.into_iter() {
-            let next = try!(self.sc(e));
+            match e {
+                rep @ &Repeat { e: _, r: _, greedy: _ } => {
+                    repeats.push(rep);
+                }
+                _ => {
+                    if repeats.len() > 0 {
+                        let next = try!(self.sc_terminated_repeats(&repeats, e));
+                        p = self.sc_continue(p, next);
+                        repeats.clear();
+                    } else {
+                        let next = try!(self.sc(e));
+                        p = self.sc_continue(p, next);
+                    }
+                }
+            }
+        }
+
+        // drain any unterminated repetitions
+        for r in repeats {
+            let next = try!(self.sc(r));
             p = self.sc_continue(p, next);
         }
+
+        Ok(p)
+    }
+
+    /// If a repetition is terminated by a literal, we can always
+    /// just scan forward for that literal and then non-deterministicly
+    /// continue scanning from the start of the repetition (in case that
+    /// literal showed up inside the repeated string) and the end of
+    /// the literal.
+    ///
+    /// If we can prove that the literal cannot appear within the repetition
+    /// we can even drop the non-determinism and just start scanning from
+    /// the end of the literal.
+    ///
+    /// The default case:
+    ///   *-scan_to_end_of_term-*
+    ///   ^                     |
+    ///   |---------------------|
+    ///
+    /// The optimal case:
+    ///   *-scan_to_end_of_term-*
+    ///
+    fn sc_terminated_repeats(
+        &mut self,
+        _repeats: &[&Expr], // TODO(ethan): perform the containment optimization
+        term: &Expr
+        ) -> Result {
+        use syntax::Expr::*;
+        // TODO(ethan): This does not respect the greedyness.
+        //              I need to do that.
+
+        let mut p = Patch { hole: Hole::None, entry: self.sc_next() };
+        match term {
+            // TODO(ethan): case sensativity
+            &Literal { ref chars, casei: _ } => {
+                // emit the literal scan instruction
+                let mut lits = Literals::empty();
+                lits.add(Lit::new(Vec::from(
+                            chars.into_iter().collect::<String>().as_bytes())));
+                let scan = self.sc_push_one(SkipInstHole::ScanLiteral {
+                    literal: LiteralSearcher::prefixes(lits)
+                });
+
+                // now non-deterministicly branch
+                let Patch { hole: split_hole, entry: split_entry } =
+                    self.sc_push_split_patch();
+                let split_hole = self.sc_fill_split(
+                                split_hole, Some(scan.entry), None);
+                let scan = self.sc_continue(scan, Patch {
+                    hole: split_hole,
+                    entry: split_entry,
+                });
+
+                p = self.sc_continue(p, scan);
+            }
+            _ => {
+                // TODO(ethan): impliment the non-literal case
+            }
+        }
+
         Ok(p)
     }
 
@@ -1390,6 +1479,7 @@ enum SkipInstHole {
     Save { slot: usize },
     Byte { c: u8, skip: usize },
     Ranges { ranges: Vec<(u8, u8)>, skip: usize },
+    ScanLiteral { literal: LiteralSearcher },
 }
 
 impl FillTo<SkipInst> for SkipInstHole {
@@ -1410,6 +1500,11 @@ impl FillTo<SkipInst> for SkipInstHole {
                     goto: goto,
                     ranges: ranges.clone(),
                     skip: skip,
+                }),
+            SkipInstHole::ScanLiteral { ref literal } =>
+                SkipInst::SkipScanLiteral(InstScanLiteral {
+                    goto: goto,
+                    literal: literal.clone(),
                 }),
         }
     }

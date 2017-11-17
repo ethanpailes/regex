@@ -333,6 +333,14 @@ impl<'r, I: Input> Fsm<'r, I> {
                         }
                         false
                     }
+                    SkipScanLiteral(ref inst) => {
+                        let lit_locs = inst.literal.find(
+                                            &self.input.as_bytes()[sp..]);
+                        if let Some((_, lit_end)) = lit_locs {
+                            self.add(run_queue, ip, inst.goto, sp + lit_end);
+                        }
+                        false
+                    }
                     ref inst => unreachable!("unhandled inst: {:?}", inst),
                 }
             }
@@ -392,9 +400,6 @@ impl<'r, I: Input> Fsm<'r, I> {
         // trace!("add_step: (ip_caps={} ip={} sp={})", ip_caps, ip, sp);
 
         loop {
-            // put internally makes sure that we don't double
-            // push something.
-
             match self.prog.skip_insts[ip] {
                 SkipSave(ref inst) => {
                     // TODO(ethan): How do I cache this outside of the loop?
@@ -417,7 +422,10 @@ impl<'r, I: Input> Fsm<'r, I> {
                                 ip_caps, ip, sp, inst.goto1, inst.goto2);
                     ip = inst.goto1;
                 }
-                SkipMatch(_) | SkipSkipByte(_) | SkipSkipRanges(_) => {
+                SkipScanLiteral(_) | SkipMatch(_) |
+                SkipSkipByte(_) | SkipSkipRanges(_) => {
+                    // put internally makes sure that we don't double
+                    // push something.
                     run_queue.put(ip, sp);
                     trace!("add_step: (ip_caps={} ip={} sp={}) adding leaf thread",
                                 ip_caps, ip, sp);
