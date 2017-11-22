@@ -1,0 +1,21 @@
+[package]
+publish = false
+name = "boyer-moore-benchmark"
+version = "0.1.0"
+authors = ["Ethan Pailes"]
+license = "MIT/Apache-2.0"
+repository = "https://github.com/rust-lang/regex"
+documentation = "http://doc.rust-lang.org/regex/regex/index.html"
+homepage = "https://github.com/rust-lang/regex"
+description = "Benchmarks for tuning the Boyer-Moore crate."
+
+[dependencies]
+boyer-moore = { version = "0.1.0", path = ".." }
+rand = "0.3"
+lipsum = "0.4.0"
+
+[[bench]]
+name = "bench"
+path = "src/bench.rs"
+test = false
+bench = true

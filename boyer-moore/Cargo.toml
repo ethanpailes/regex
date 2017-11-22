@@ -1,0 +1,10 @@
+[package]
+name = "boyer-moore"
+version = "0.1.0"
+authors = ["Ethan Pailes <ethanpailes@gmail.com>"]
+
+[dependencies]
+memchr = "2.0.0"
+
+[dev-dependencies]
+quickcheck = { version = "0.4.1", default-features = false }
