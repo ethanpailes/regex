@@ -6,6 +6,9 @@ extern crate test;
 extern crate rand;
 extern crate lipsum;
 
+mod freqs;
+use freqs::BYTE_FREQUENCIES;
+
 use rand::Rng;
 
 macro_rules! string_searcher_benches {
@@ -17,6 +20,7 @@ macro_rules! string_searcher_benches {
 
             use self::boyer_moore::{$searcher, StringSearcher};
 
+            /*
             /// Benchmark on some randomly generated data. Directly
             /// inspired by ripgrep-617.
             ///
@@ -58,6 +62,14 @@ macro_rules! string_searcher_benches {
                     super::sherlock_gen_haystack,
                     super::lipsum_exact_bytes);
             }
+            */
+
+            #[bench]
+            fn bench_uncommon_needle(b: &mut Bencher) {
+                bench_string_searcher(b,
+                    super::sherlock_gen_haystack,
+                    super::all_uncommon);
+            }
 
             fn bench_string_searcher<F1, F2>(
                 b: &mut Bencher,
@@ -79,7 +91,7 @@ macro_rules! string_searcher_benches {
 
                 b.iter(|| {
                     match searcher.find(haystack.as_slice()) {
-                        Some(off) => assert_eq!(needle_start, off),
+                        Some(off) => (),//assert_eq!(needle_start, off),
                         None =>
                             panic!("Needle not found. (needle={:?}).", needle),
                     }
@@ -130,6 +142,16 @@ fn sherlock_gen_haystack(n: usize) -> Vec<u8> {
     spool_bytes(n, sherlock.as_bytes())
 }
 
+fn all_uncommon(n: usize) -> Vec<u8> {
+    use std::iter::repeat;
+    const RANK: usize = 242; //253;
+    fn freq_rank(b: u8) -> usize { BYTE_FREQUENCIES[b as usize] as usize }
+
+    let c = (0..255).filter(|b| freq_rank(*b) == RANK).nth(0).unwrap();
+
+    spool_bytes(n, repeat(c).take(100).collect::<Vec<_>>().as_slice())
+}
+
 fn spool_bytes(n: usize, spool: &[u8]) -> Vec<u8> {
     let mut ret = Vec::with_capacity(n);
 
@@ -162,7 +184,7 @@ mod tests {
 string_searcher_benches!(
     bm_h1000000n10, 1000000, 10, BoyerMooreSearcher);
 string_searcher_benches!(
-    bm_h1000000n20, 1000000, 20, BoyerMooreSearcher);
+    bm_h1000000n21, 1000000, 21, BoyerMooreSearcher);
 string_searcher_benches!(
     bm_h1000000n100, 1000000, 100, BoyerMooreSearcher);
 
