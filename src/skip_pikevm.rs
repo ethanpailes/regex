@@ -38,6 +38,7 @@ macro_rules! trace {
 pub struct Fsm<'r, I> {
     prog: &'r Program,
     stack: &'r mut Vec<FollowEpsilon>,
+    literal_scan_table: &'r mut Vec<Option<usize>>,
 
     // TODO(ethan): benchmark to see if storing this as an Input matters,
     //              or if I need to store it as a byte slice.
@@ -196,6 +197,12 @@ impl RunQueue {
 pub struct Cache {
     queue: RunQueue,
     stack: Vec<FollowEpsilon>,
+
+    /// A table mapping instruction pointers to the offset of
+    /// a literal that a suspended thread is scanning forward
+    /// towards. This guy is required because of the ring buffer
+    /// thread queue.
+    literal_scan_table: Vec<Option<usize>>,
 }
 
 impl Cache {
@@ -203,7 +210,19 @@ impl Cache {
         Cache {
             queue: RunQueue::new(),
             stack: vec![],
+            literal_scan_table: vec![],
         }
+    }
+
+    /// Resize the Cache for a regex with `num_insts` instructions
+    /// and `ncaps` capture groups.
+    fn resize(&mut self, num_insts: usize, ncaps: usize) {
+        self.queue.resize(num_insts, ncaps);
+
+        if num_insts == self.literal_scan_table.capacity() {
+            return;
+        }
+        self.literal_scan_table = vec![None; num_insts];
     }
 }
 
@@ -234,9 +253,11 @@ impl<'r, I: Input> Fsm<'r, I> {
         trace!("====================== END PROG ============================");
         trace!("");
 
+        cache.resize(prog.skip_insts.len(), prog.captures.len());
         Fsm {
             prog: prog,
             stack: &mut cache.stack,
+            literal_scan_table: &mut cache.literal_scan_table,
             input: input,
         }.exec_(&mut cache.queue, slots, start)
     }
@@ -249,7 +270,6 @@ impl<'r, I: Input> Fsm<'r, I> {
         string_pointer: usize,
     ) {
         // Set up the queue.
-        run_queue.resize(self.prog.skip_insts.len(), self.prog.captures.len());
         run_queue.set_string_pointer(string_pointer);
 
         // Push the first thread.
@@ -334,10 +354,30 @@ impl<'r, I: Input> Fsm<'r, I> {
                         false
                     }
                     SkipScanLiteral(ref inst) => {
-                        let lit_locs = inst.literal.find(
+                        let lit_loc = inst.literal.find(
                                             &self.input.as_bytes()[sp..]);
-                        if let Some((_, lit_end)) = lit_locs {
-                            self.add(run_queue, ip, inst.goto, sp + lit_end);
+
+                        if let Some((lit_start, lit_end)) = lit_loc {
+                            // how far do we want to go?
+                            let new_sp = match self.literal_scan_table[ip] {
+                                Some(nsp) => nsp,
+                                None => if inst.start {
+                                            sp + lit_start
+                                        } else {
+                                            sp + lit_end
+                                        }
+                            };
+
+                            // how far can we actually go?
+                            let tgt_sp = if new_sp - sp >= RUN_QUEUE_RING_SIZE {
+                                self.literal_scan_table[ip] = Some(new_sp);
+                                sp + (RUN_QUEUE_RING_SIZE - 1)
+                            } else {
+                                self.literal_scan_table[ip] = None;
+                                new_sp
+                            };
+
+                            self.add(run_queue, ip, inst.goto, tgt_sp);
                         }
                         false
                     }

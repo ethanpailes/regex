@@ -98,7 +98,7 @@ fn spike_two_rep_caps() {
 #[test]
 fn spike_dotstar() {
     let re = spike_re!(".*(a)");
-    let haystack = "bbbbbbbba";
+    let haystack = format!("{}a", repeat("b").take(100).collect::<String>());
     let caps = re.captures(haystack.as_bytes()).unwrap();
     assert_eq!(haystack.as_bytes(), &caps[0]);
     assert_eq!("a".as_bytes(), &caps[1]);

@@ -161,7 +161,7 @@ impl Compiler {
         }
         self.compiled.captures = vec![None];
         let patch = try!(self.c_capture(0, expr));
-        let sc_patch = try!(self.sc_capture(0, expr));
+        let sc_patch = try!(self.sc_capture(0, |c| { c.sc(expr) }));
         if self.compiled.needs_dotstar() {
             self.fill(dotstar_patch.hole, patch.entry);
             self.sc_fill(sc_dotstar_patch.hole, sc_patch.entry);
@@ -222,7 +222,6 @@ impl Compiler {
             self.insts.into_iter().map(|inst| inst.unwrap()).collect();
         self.compiled.skip_insts =
             self.skip_insts.into_iter().map(|si| si.unwrap()).collect();
-        // TODO(ethan): collect compiled skip instructions here
         self.compiled.byte_classes = self.byte_classes.byte_classes();
         self.compiled.capture_name_idx = Arc::new(self.capture_name_idx);
         Ok(self.compiled)
@@ -382,7 +381,7 @@ impl Compiler {
                         self.capture_name_idx.insert(name.to_owned(), i);
                     }
                 }
-                self.sc_capture(2 * i, e)
+                self.sc_capture(2 * i, |c| { c.sc(e) })
             }
             Alternate(ref es) => self.sc_alternate(&**es),
             ref e => unreachable!("Unimplimented instruction: {:?}", e),
@@ -407,15 +406,17 @@ impl Compiler {
         }
     }
 
-    fn sc_capture(&mut self, first_slot: usize, expr: &Expr) -> Result {
+    fn sc_capture<F>(&mut self, first_slot: usize, compile_inner: F) -> Result 
+        where F: FnOnce(&mut Self) -> Result
+    {
         if self.num_exprs > 1 || self.compiled.is_dfa {
-            self.sc(expr)
+            compile_inner(self)
         } else {
             let p = self.sc_push_one(SkipInstHole::Save {
                 slot: first_slot
             });
 
-            let next = try!(self.sc(expr));
+            let next = try!(compile_inner(self));
             let p = self.sc_continue(p, next);
 
             let next = self.sc_push_one(SkipInstHole:: Save {
@@ -713,40 +714,102 @@ impl Compiler {
     ///
     fn sc_terminated_repeats(
         &mut self,
-        _repeats: &[&Expr], // TODO(ethan): perform the containment optimization
+        repeats: &[&Expr], // TODO(ethan): perform the containment optimization
         term: &Expr
         ) -> Result {
         use syntax::Expr::*;
         // TODO(ethan): This does not respect the greedyness.
         //              I need to do that.
 
+        // TODO(ethan): If the repeated patterns contain capture groups
+        //              this optimization is not ligit.
+
+        // TODO(ethan): 
+        //
+        // I need to think harder about weather it is ok to
+        // nondeterministicly split at the end of the scan. We know
+        // that the literal always appears after the repeated pattern,
+        // so I think it is ok to always scan forward and then try
+        // to keep parsing after the repetition... hhhmm.
+        let sc_literal_scan = |compiler: &mut Self,
+                               chars: &Vec<char>,
+                               start: bool| {
+            // First, emit the scan instruction.
+            let mut lits = Literals::empty();
+            lits.add(Lit::new(Vec::from(
+                         chars.into_iter().collect::<String>().as_bytes())));
+            let scan = compiler.sc_push_one(SkipInstHole::ScanLiteral {
+                literal: LiteralSearcher::prefixes(lits),
+                start: start,
+            });
+
+            // Now non-deterministicly branch back to the start.
+            let Patch { hole: split_hole, entry: split_entry } =
+                compiler.sc_push_split_patch();
+
+            let split_hole =
+                compiler.sc_fill_split(split_hole, Some(scan.entry), None);
+
+            let scan = compiler.sc_continue(scan, Patch {
+                hole: split_hole,
+                entry: split_entry,
+            });
+
+            scan
+        };
+
         let mut p = Patch { hole: Hole::None, entry: self.sc_next() };
-        match term {
+
+        use std::ops::Deref;
+        let can_scan = match term {
             // TODO(ethan): case sensativity
             &Literal { ref chars, casei: _ } => {
-                // emit the literal scan instruction
-                let mut lits = Literals::empty();
-                lits.add(Lit::new(Vec::from(
-                            chars.into_iter().collect::<String>().as_bytes())));
-                let scan = self.sc_push_one(SkipInstHole::ScanLiteral {
-                    literal: LiteralSearcher::prefixes(lits)
-                });
-
-                // now non-deterministicly branch
-                let Patch { hole: split_hole, entry: split_entry } =
-                    self.sc_push_split_patch();
-                let split_hole = self.sc_fill_split(
-                                split_hole, Some(scan.entry), None);
-                let scan = self.sc_continue(scan, Patch {
-                    hole: split_hole,
-                    entry: split_entry,
-                });
-
-                p = self.sc_continue(p, scan);
+                let next = sc_literal_scan(self, chars, false);
+                p = self.sc_continue(p, next);
+                true
             }
-            _ => {
-                // TODO(ethan): impliment the non-literal case
+            &Group { ref e, i: Some(idx), ref name } => {
+                match e.deref() {
+                    &Literal { ref chars, casei } => {
+                        // TODO(ethan): remove this code duplication.
+                        if idx >= self.compiled.captures.len() {
+                            self.compiled.captures.push(name.clone());
+                            if let Some(ref name) = *name {
+                                self.capture_name_idx
+                                    .insert(name.to_owned(), idx);
+                            }
+                        }
+
+                        // First emit the literal scan, asking the scanner
+                        // to drop us right at the start of the literal
+                        let next = sc_literal_scan(self, chars, true);
+                        p = self.sc_continue(p, next);
+
+                        // Now emit the capturing scan while jumping
+                        // over the literal itself.
+                        let next = try!(self.sc_capture(2 * idx, |c| {
+                            c.sc_literal(chars, casei)
+                        }));
+                        p = self.sc_continue(p, next);
+
+                        true
+                    }
+                    _ => false
+                }
             }
+            // TODO(ethan): Add support for terminating literal sets,
+            //              like /a*(bbbbb|ccccc)/ OR /a*bbbbb|ccccc/
+            _ => false
+        };
+
+        if !can_scan {
+            // a list of just repetitions will terminate the
+            // mutal recursion.
+            let next = try!(self.sc_concat(repeats.into_iter().map(|x| *x)));
+            p = self.sc_continue(p, next);
+
+            let next = try!(self.sc(term));
+            p = self.sc_continue(p, next);
         }
 
         Ok(p)
@@ -1479,7 +1542,7 @@ enum SkipInstHole {
     Save { slot: usize },
     Byte { c: u8, skip: usize },
     Ranges { ranges: Vec<(u8, u8)>, skip: usize },
-    ScanLiteral { literal: LiteralSearcher },
+    ScanLiteral { literal: LiteralSearcher, start: bool },
 }
 
 impl FillTo<SkipInst> for SkipInstHole {
@@ -1501,10 +1564,11 @@ impl FillTo<SkipInst> for SkipInstHole {
                     ranges: ranges.clone(),
                     skip: skip,
                 }),
-            SkipInstHole::ScanLiteral { ref literal } =>
+            SkipInstHole::ScanLiteral { ref literal, start } =>
                 SkipInst::SkipScanLiteral(InstScanLiteral {
                     goto: goto,
                     literal: literal.clone(),
+                    start: start
                 }),
         }
     }

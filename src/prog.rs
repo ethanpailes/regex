@@ -334,11 +334,6 @@ pub enum SkipInst {
     /// is meant as an optimization to speed up kleene star (especially
     /// dotstars).
     SkipScanLiteral(InstScanLiteral),
-
-    // TODO(ethan):opt add a SkipScanByte instruction which tells
-    // the VM to just scan forward in the input to a specific
-    // char. Use benchmark driven development to see if I can
-    // speed up /.*(a).*/ on large input.
 }
 
 /// Representation of the SkipByte instruction.
@@ -371,8 +366,13 @@ pub struct InstScanLiteral {
     /// The next location to execute in the program if this instruction
     /// succeeds.
     pub goto: InstPtr,
-    /// The literal to scan forward in the input for.
+    /// The literal(s) to scan forward in the input for.
     pub literal: LiteralSearcher,
+    /// A flag indicating if the engine should place the string
+    /// pointer at the start of the literal or at the end. This
+    /// allows us to handle the case where a terminating literal set
+    /// is enclosed in a capture group.
+    pub start: bool,
 }
 
 
