@@ -114,6 +114,69 @@ impl Program {
         }
     }
 
+    /// An iterator over the direct non-noop decedents of the instruction
+    /// at the given pc.
+    pub fn children(&self, pc: usize) -> InstChildren {
+        InstChildren::new(self.insts.as_slice(), pc)
+    }
+
+    /// Decides the question L(self) `intersect` L(other) == emptyset
+    ///
+    /// This question is key to deciding when it is ligitimate to
+    /// perform the LiteralScan optimization.
+    ///
+    /// We just do DFS over the intersect automita of the two regex
+    pub fn intersection_is_empty(&self, other: &Self) -> bool {
+        use self::Inst::*;
+        use std::collections::HashSet;
+
+        let ist_children = |st: IntersectState| {
+            IntersectInstChildren::new(
+                    self.insts.as_slice(), st.st1,
+                    other.insts.as_slice(), st.st2)
+        };
+
+        let is_match = |st: &IntersectState| {
+            match self.insts[st.st1] {
+                Match(_) => {
+                    match other.insts[st.st2] {
+                        Match(_) => true,
+                        _ => false,
+                    }
+                }
+                _ => false,
+            }
+        };
+
+        let mut stack: Vec<IntersectState> = vec![IntersectState {
+            st1: self.start,
+            st2: other.start,
+        }];
+
+        let mut seen = HashSet::new();
+
+        while let Some(st) = stack.pop() {
+            if seen.contains(&st) {
+                continue;
+            }
+            seen.insert(st.clone());
+
+            // A matching state is reachable from the start,
+            // so L(self) `intersect` L(other) /= emptyset
+            if is_match(&st) {
+                return false;
+            }
+
+            for c in ist_children(st) {
+                stack.push(c);
+            }
+        }
+
+        // No matter what input we are given, the intersection will
+        // never accept.
+        true
+    }
+
     /// Return true if and only if an execution engine at instruction `pc` will
     /// always lead to a match.
     pub fn leads_to_match(&self, pc: usize) -> bool {
@@ -244,6 +307,163 @@ impl<'a> IntoIterator for &'a Program {
     type Item = &'a Inst;
     type IntoIter = slice::Iter<'a, Inst>;
     fn into_iter(self) -> Self::IntoIter { self.iter() }
+}
+
+#[derive(Clone, Debug)]
+pub struct InstChildren<'p> {
+    // a stack recording our position in the DFS
+    branches: Vec<usize>,
+    // the instructions we are iterating over
+    insts: &'p [Inst],
+}
+
+impl<'p> InstChildren<'p> {
+    fn new(insts: &'p [Inst], start: usize) -> Self {
+        let mut c = InstChildren {
+            branches: vec![],
+            insts: insts
+        };
+        c.find_next(start);
+        c
+    }
+
+    /// Given a start point, follow goto pointers until we
+    /// reach a leaf value, leaving a trail of breadcrumbs
+    /// in `branches` to handle split points.
+    fn find_next(&mut self, from: usize) {
+        use self::Inst::*;
+
+        let mut i = from;
+        let mut look_goto = 0;
+        loop {
+            let mut saw_look = false;
+            match self.insts[i] {
+                Save(ref inst) => i = inst.goto,
+                Split(ref inst) => {
+                    self.branches.push(inst.goto2);
+                    i = inst.goto1;
+                }
+                EmptyLook(ref inst) => {
+                    look_goto = inst.goto;
+                    saw_look = true;
+                }
+                Char(ref inst) => {
+                    look_goto = inst.goto;
+                    saw_look = true;
+                }
+                Ranges(ref inst) => {
+                    look_goto = inst.goto;
+                    saw_look = true;
+                }
+                Bytes(ref inst) => {
+                    look_goto = inst.goto;
+                    saw_look = true;
+                }
+                Match(_) => {
+                    if i != from {
+                        self.branches.push(i);
+                        return;
+                    }
+                }
+            }
+
+            if saw_look {
+                if i != from {
+                    self.branches.push(i);
+                    return;
+                } else {
+                    i = look_goto;
+                }
+            }
+        }
+    }
+}
+
+/// An iterator over the child instructions of a given instruction.
+///
+/// This will automatically follow Split and Save instructions, so
+/// that it only returns instructions which might assert something
+/// about the input.
+impl<'p> Iterator for InstChildren<'p> {
+    type Item = usize;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let result = self.branches.pop();
+        if !self.branches.is_empty() {
+            let from = self.branches[self.branches.len() - 1];
+            self.find_next(from);
+        }
+        result
+    }
+}
+
+/// To take the interesction of two Regex we can construct
+/// a new automita where each state is a tuple of the two
+/// states of the input Regex. In our VM formulation of an
+/// NFA, states are instruction indicies
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct IntersectState {
+    st1: usize,
+    st2: usize,
+}
+
+#[derive(Clone, Debug)]
+struct IntersectInstChildren<'p> {
+    i1: InstChildren<'p>,
+    i1_current: Option<usize>,
+
+    i2: InstChildren<'p>,
+    i2_current: InstChildren<'p>,
+}
+
+impl<'p> IntersectInstChildren<'p> {
+    fn new(
+        insts1: &'p [Inst],
+        st1: usize,
+        insts2: &'p [Inst],
+        st2: usize
+    ) -> Self {
+        let mut i1 = InstChildren::new(insts1, st1);
+        let cur = i1.next();
+        Self {
+            i1: i1,
+            i1_current: cur,
+            i2: InstChildren::new(insts2, st2),
+            i2_current: InstChildren::new(insts2, st2),
+        }
+    }
+}
+
+macro_rules! otry {
+    ($e:expr) => {
+        match $e {
+            None => return None,
+            Some(x) => x,
+        }
+    }
+}
+
+impl<'p> Iterator for IntersectInstChildren<'p> {
+    type Item = IntersectState;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let i2_st = match self.i2_current.next() {
+            None => { // time to shuffle i1
+                self.i1_current = self.i1.next();
+                self.i2_current = self.i2.clone();
+
+                // If the second iterator has no elements,
+                // then we have no elements
+                otry!(self.i2_current.next())
+            }
+            Some(i2_st) => i2_st,
+        };
+
+        Some(IntersectState {
+            st1: otry!(self.i1_current),
+            st2: i2_st,
+        })
+    }
 }
 
 /// Inst is an instruction code in a Regex program.
