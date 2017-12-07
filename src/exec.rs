@@ -333,6 +333,7 @@ impl ExecBuilder {
         let mut nfa = try!(
             Compiler::new()
                      .size_limit(self.options.size_limit)
+                     .has_skip_insts(self.options.skip_mode)
                      .bytes(self.bytes || parsed.bytes)
                      .only_utf8(self.only_utf8)
                      .compile(&parsed.exprs));
@@ -1178,6 +1179,11 @@ impl Exec {
         }
     }
 
+    /// True if the intersection of the two regex can't possibly accept.
+    pub fn intersection_is_empty(lhs: &Self, rhs: &Self) -> bool {
+        ExecReadOnly::intersection_is_empty(&lhs.ro, &rhs.ro)
+    }
+
     /// Get a searcher that isn't Sync and can match on &str.
     #[inline(always)] // reduces constant overhead
     pub fn searcher_str(&self) -> ExecNoSyncStr {
@@ -1316,6 +1322,10 @@ impl ExecReadOnly {
         }
         let lcs_len = self.suffixes.lcs().char_len();
         lcs_len >= 3 && lcs_len > self.dfa.prefixes.lcp().char_len()
+    }
+
+    pub fn intersection_is_empty(lhs: &Self, rhs: &Self) -> bool {
+        Program::intersection_is_empty(&lhs.nfa, &rhs.nfa)
     }
 }
 

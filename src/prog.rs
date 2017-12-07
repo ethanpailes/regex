@@ -9,6 +9,19 @@ use std::sync::Arc;
 use input::Char;
 use literals::LiteralSearcher;
 
+// Flip to true for debugging
+const TRACE: bool = true;
+macro_rules! trace {
+    ($($tts:tt)*) => {
+        if TRACE {
+            println!($($tts)*);
+        }
+    }
+}
+
+#[cfg(test)]
+use exec::{ExecBuilder, Exec};
+
 /// `InstPtr` represents the index of an instruction in a regex program.
 pub type InstPtr = usize;
 
@@ -60,6 +73,8 @@ pub struct Program {
     pub has_unicode_word_boundary: bool,
     /// A possibly empty machine for very quickly matching prefix literals.
     pub prefixes: LiteralSearcher,
+    /// True if the program has skip instructions.
+    pub has_skip_insts: bool,
     /// A limit on the size of the cache that the DFA is allowed to use while
     /// matching.
     ///
@@ -99,6 +114,7 @@ impl Program {
             is_anchored_end: false,
             has_unicode_word_boundary: false,
             prefixes: LiteralSearcher::empty(),
+            has_skip_insts: false,
             dfa_size_limit: 2 * (1<<20),
         }
     }
@@ -126,20 +142,38 @@ impl Program {
     /// perform the LiteralScan optimization.
     ///
     /// We just do DFS over the intersect automita of the two regex
-    pub fn intersection_is_empty(&self, other: &Self) -> bool {
+    #[allow(unreachable_code, unused_variables)]
+    pub fn intersection_is_empty(lhs: &Self, rhs: &Self) -> bool {
         use self::Inst::*;
         use std::collections::HashSet;
 
-        let ist_children = |st: IntersectState| {
+        if TRACE {
+            trace!("");
+            trace!("====================== LHS ========================");
+            for (i, inst) in lhs.insts.iter().enumerate() {
+                trace!("{:04}: {:?}", i, inst);
+            }
+            trace!("==================== END LHS ======================");
+            trace!("");
+            trace!("");
+            trace!("");
+            trace!("====================== RHS ========================");
+            for (i, inst) in rhs.insts.iter().enumerate() {
+                trace!("{:04}: {:?}", i, inst);
+            }
+            trace!("==================== END RHS ======================");
+        }
+
+        let inter_children = |st: IntersectState| {
             IntersectInstChildren::new(
-                    self.insts.as_slice(), st.st1,
-                    other.insts.as_slice(), st.st2)
+                    lhs.insts.as_slice(), st.st1,
+                    rhs.insts.as_slice(), st.st2)
         };
 
         let is_match = |st: &IntersectState| {
-            match self.insts[st.st1] {
+            match lhs.insts[st.st1] {
                 Match(_) => {
-                    match other.insts[st.st2] {
+                    match rhs.insts[st.st2] {
                         Match(_) => true,
                         _ => false,
                     }
@@ -149,8 +183,8 @@ impl Program {
         };
 
         let mut stack: Vec<IntersectState> = vec![IntersectState {
-            st1: self.start,
-            st2: other.start,
+            st1: lhs.start,
+            st2: rhs.start,
         }];
 
         let mut seen = HashSet::new();
@@ -167,7 +201,7 @@ impl Program {
                 return false;
             }
 
-            for c in ist_children(st) {
+            for c in inter_children(st) {
                 stack.push(c);
             }
         }
@@ -333,46 +367,28 @@ impl<'p> InstChildren<'p> {
     fn find_next(&mut self, from: usize) {
         use self::Inst::*;
 
-        let mut i = from;
-        let mut look_goto = 0;
+        // don't start at `from` so that we can actually make it
+        // out of input consuming states states
+        let mut i = match self.insts[from] {
+            Save(ref inst) => inst.goto,
+            Split(_) => from,
+            EmptyLook(ref inst) => inst.goto,
+            Char(ref inst) => inst.goto,
+            Ranges(ref inst) => inst.goto,
+            Bytes(ref inst) => inst.goto,
+            Match(_) => return,
+        };
+
         loop {
-            let mut saw_look = false;
             match self.insts[i] {
                 Save(ref inst) => i = inst.goto,
                 Split(ref inst) => {
                     self.branches.push(inst.goto2);
                     i = inst.goto1;
                 }
-                EmptyLook(ref inst) => {
-                    look_goto = inst.goto;
-                    saw_look = true;
-                }
-                Char(ref inst) => {
-                    look_goto = inst.goto;
-                    saw_look = true;
-                }
-                Ranges(ref inst) => {
-                    look_goto = inst.goto;
-                    saw_look = true;
-                }
-                Bytes(ref inst) => {
-                    look_goto = inst.goto;
-                    saw_look = true;
-                }
-                Match(_) => {
-                    if i != from {
-                        self.branches.push(i);
-                        return;
-                    }
-                }
-            }
-
-            if saw_look {
-                if i != from {
+                _ => { // input consuming state
                     self.branches.push(i);
                     return;
-                } else {
-                    i = look_goto;
                 }
             }
         }
@@ -389,10 +405,7 @@ impl<'p> Iterator for InstChildren<'p> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let result = self.branches.pop();
-        if !self.branches.is_empty() {
-            let from = self.branches[self.branches.len() - 1];
-            self.find_next(from);
-        }
+        self.branches.pop().map(|from| self.find_next(from));
         result
     }
 }
@@ -411,9 +424,11 @@ struct IntersectState {
 struct IntersectInstChildren<'p> {
     i1: InstChildren<'p>,
     i1_current: Option<usize>,
+    insts1: &'p [Inst],
 
     i2: InstChildren<'p>,
     i2_current: InstChildren<'p>,
+    insts2: &'p [Inst],
 }
 
 impl<'p> IntersectInstChildren<'p> {
@@ -424,12 +439,15 @@ impl<'p> IntersectInstChildren<'p> {
         st2: usize
     ) -> Self {
         let mut i1 = InstChildren::new(insts1, st1);
+        let i2 = InstChildren::new(insts2, st2);
         let cur = i1.next();
         Self {
             i1: i1,
             i1_current: cur,
-            i2: InstChildren::new(insts2, st2),
-            i2_current: InstChildren::new(insts2, st2),
+            insts1,
+            i2: i2.clone(),
+            i2_current: i2,
+            insts2,
         }
     }
 }
@@ -447,7 +465,8 @@ impl<'p> Iterator for IntersectInstChildren<'p> {
     type Item = IntersectState;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let i2_st = match self.i2_current.next() {
+        trace!("IntersectInstChildren::next");
+        let st2 = match self.i2_current.next() {
             None => { // time to shuffle i1
                 self.i1_current = self.i1.next();
                 self.i2_current = self.i2.clone();
@@ -459,10 +478,27 @@ impl<'p> Iterator for IntersectInstChildren<'p> {
             Some(i2_st) => i2_st,
         };
 
-        Some(IntersectState {
-            st1: otry!(self.i1_current),
-            st2: i2_st,
-        })
+        // If we run off the end of the first iterator, we are done.
+        let st1 = otry!(self.i1_current);
+        
+        // We want to gaurd against returning a state which can't
+        // accept any charicter. For example consider the state:
+        //
+        // ```text
+        // char a ; char b
+        // ```
+        // 
+        // Here if the input charicter is an 'a' then thread 2 will die,
+        // but if the input charicter is a 'b' then thread 1 will die.
+        if Inst::has_intersecting_char(&self.insts1[st1], &self.insts2[st2]) {
+            Some(IntersectState {
+                st1: st1,
+                st2: st2,
+            })
+        } else {
+            self.next()
+        }
+
     }
 }
 
@@ -604,6 +640,77 @@ impl Inst {
             _ => false,
         }
     }
+
+    fn has_intersecting_char(lhs: &Self, rhs: &Self) -> bool {
+        // I feel like I should do a dynamic dispatch kinda thing here.
+        match lhs {
+            &Inst::Char(ref inst) => {
+                rhs.intersects_with_char(inst)
+            }
+            &Inst::Ranges(ref inst) => {
+                rhs.intersects_with_ranges(inst)
+            }
+            &Inst::Bytes(ref inst) => {
+                rhs.intersects_with_bytes(inst)
+            }
+            &Inst::EmptyLook(ref inst) => {
+                rhs.intersects_with_empty_look(inst)
+            }
+            &Inst::Match(_) | &Inst::Save(_) | &Inst::Split(_) => true,
+        }
+    }
+
+    fn intersects_with_char(&self, c: &InstChar) -> bool {
+        match self {
+            &Inst::Char(ref inst) => c.c == inst.c,
+            &Inst::Ranges(ref inst) => inst.matches(Char::from(c.c)),
+            &Inst::Bytes(_) => {
+                panic!("Mixed unicode and byte regex.")
+            }
+            &Inst::EmptyLook(_) => {
+                // I think I need to thread instruction history and lookahead
+                // through in order to impliment this properly.
+                //
+                // TODO:ethan
+                panic!("EmptyLook, what do?")
+            }
+            &Inst::Match(_) | &Inst::Save(_) | &Inst::Split(_) => true,
+        }
+    }
+
+    fn intersects_with_ranges(&self, r: &InstRanges) -> bool {
+        match self {
+            &Inst::Char(ref inst) => r.matches(Char::from(inst.c)),
+            &Inst::Ranges(ref inst) => inst.intersects(r),
+            &Inst::Bytes(_) => {
+                panic!("Mixed unicode and byte regex.")
+            }
+            &Inst::EmptyLook(_) => {
+                panic!("EmptyLook, what do?")
+            }
+            &Inst::Match(_) | &Inst::Save(_) | &Inst::Split(_) => true,
+        }
+    }
+
+    fn intersects_with_bytes(&self, b: &InstBytes) -> bool {
+        match self {
+            &Inst::Char(_) => {
+                panic!("Mixed unicode and byte regex.")
+            }
+            &Inst::Ranges(_) => {
+                panic!("Mixed unicode and byte regex.")
+            }
+            &Inst::Bytes(ref inst) => b.intersects(inst),
+            &Inst::EmptyLook(_) => {
+                panic!("EmptyLook, what do?")
+            }
+            &Inst::Match(_) | &Inst::Save(_) | &Inst::Split(_) => true,
+        }
+    }
+
+    fn intersects_with_empty_look(&self, _el: &InstEmptyLook) -> bool {
+        panic!("EmptyLook, what do?")
+    }
 }
 
 /// Representation of the Save instruction.
@@ -703,6 +810,24 @@ impl InstRanges {
         }).is_ok()
     }
 
+    /// Tests if two ranges could ever match at the same time.
+    fn intersects(&self, r: &InstRanges) -> bool {
+        let (shorter, longer) = if self.ranges.len() < r.ranges.len() {
+            (self, r)
+        } else {
+            (r, self)
+        };
+
+        for &(start, end) in shorter.ranges.iter() {
+            if longer.matches(Char::from(start))
+                || longer.matches(Char::from(end)) {
+                return true;
+            }
+        }
+
+        false
+    }
+
     /// Return the number of distinct characters represented by all of the
     /// ranges.
     pub fn num_chars(&self) -> usize {
@@ -730,4 +855,71 @@ impl InstBytes {
     pub fn matches(&self, byte: u8) -> bool {
         self.start <= byte && byte <= self.end
     }
+
+    fn intersects(&self, other: &InstBytes) -> bool {
+        self.matches(other.start) || self.matches(other.end)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // use super::Compiler;
+    use super::{ExecBuilder, Exec};
+
+    #[test]
+    fn inter_null_different_lits() {
+        let prog1 = ExecBuilder::new("foo").build().unwrap();
+        let prog2 = ExecBuilder::new("bar").build().unwrap();
+
+        // Nothing matches both /foo/ and /bar/
+        assert!(Exec::intersection_is_empty(&prog1, &prog2));
+    }
+
+    #[test]
+    fn inter_null_same_lits() {
+        let prog1 = ExecBuilder::new("foo").build().unwrap();
+        let prog2 = ExecBuilder::new("foo").build().unwrap();
+
+        // "foo" `in` L(/foo/) `intersect` L(/foo/)
+        assert!(! Exec::intersection_is_empty(&prog1, &prog2));
+    }
+
+    #[test]
+    fn inter_null_lit_dotstar() {
+        let prog1 = ExecBuilder::new("foo").build().unwrap();
+        let prog2 = ExecBuilder::new(".*").build().unwrap();
+
+        // "foo" `in` L(/foo/) `intersect` L(/.*/)
+        assert!(! Exec::intersection_is_empty(&prog1, &prog2));
+    }
+
+    #[test]
+    fn inter_null_fs_in_fstar() {
+        let prog1 = ExecBuilder::new("ffff").build().unwrap();
+        let prog2 = ExecBuilder::new("f*").build().unwrap();
+
+        // "ffff" `in` L(/ffff/) `intersect` L(/f*/)
+        assert!(! Exec::intersection_is_empty(&prog1, &prog2));
+    }
+
+    #[test]
+    fn inter_null_union() {
+        let prog1 = ExecBuilder::new("a|b").build().unwrap();
+        let prog2 = ExecBuilder::new("b|c").build().unwrap();
+
+        // "b" `in` L(/a|b/) `intersect` L(/b|c/)
+        assert!(! Exec::intersection_is_empty(&prog1, &prog2));
+    }
+
+    #[test]
+    fn inter_null_concat_union() {
+        let prog1 = ExecBuilder::new("zz(?:a|b)").build().unwrap();
+        let prog2 = ExecBuilder::new(".*(?:b|c)").build().unwrap();
+
+        // "b" `in` L(/zz(?:a|b>/) `intersect` L(/.*(?:b|c)/)
+        assert!(! Exec::intersection_is_empty(&prog1, &prog2));
+    }
+
+    // TODO:ethan quickcheck properties
+
 }

@@ -65,16 +65,6 @@ fn spike_kleene_star_twoc() {
 }
 
 #[test]
-fn spike_kleene_star_twoc_lazy() {
-    let re = spike_re!("c*?c");
-    let caps = re.captures("cc".as_bytes()).unwrap();
-    assert_eq!("c".as_bytes(), &caps[0]);
-
-    let caps = re.captures("ccc".as_bytes()).unwrap();
-    assert_eq!("c".as_bytes(), &caps[0]);
-}
-
-#[test]
 fn spike_kleene_star() {
     let re = spike_re!("a*(bbb)c*c");
     let caps = re.captures("aaaaabbbccc".as_bytes()).unwrap();
@@ -103,3 +93,35 @@ fn spike_dotstar() {
     assert_eq!(haystack.as_bytes(), &caps[0]);
     assert_eq!("a".as_bytes(), &caps[1]);
 }
+
+//
+// Backlog of tests that fail or pass when I don't understand why
+//
+
+// fails
+#[test]
+fn spike_kleene_star_twoc_lazy() {
+    let re = spike_re!("c*?c");
+    let caps = re.captures("cc".as_bytes()).unwrap();
+    assert_eq!("c".as_bytes(), &caps[0]);
+
+    let caps = re.captures(b"ccc").unwrap();
+    assert_eq!("c".as_bytes(), &caps[0]);
+}
+
+// fails
+#[test]
+fn spike_astar_comma() {
+    let re = spike_re!("a*,(.)");
+    let caps = re.captures(b"a,foo,x").unwrap();
+    assert_eq!(b"f", &caps[1]);
+}
+
+// why does this pass?
+#[test]
+fn spike_branch_differentiation() {
+    let re = spike_re!("ab.(.)|ac(.).");
+    let caps = re.captures(b"acxy").unwrap();
+    assert_eq!(b"x", &caps[2]);
+}
+

@@ -50,6 +50,7 @@ pub struct Compiler {
     suffix_cache: SuffixCache,
     utf8_seqs: Option<Utf8Sequences>,
     byte_classes: ByteClassSet,
+    has_skip_insts: bool,
 }
 
 impl Compiler {
@@ -67,6 +68,7 @@ impl Compiler {
             suffix_cache: SuffixCache::new(1000),
             utf8_seqs: Some(Utf8Sequences::new('\x00', '\x00')),
             byte_classes: ByteClassSet::new(),
+            has_skip_insts: false,
         }
     }
 
@@ -75,6 +77,13 @@ impl Compiler {
     /// compilation will stop and return an error.
     pub fn size_limit(mut self, size_limit: usize) -> Self {
         self.size_limit = size_limit;
+        self
+    }
+
+    /// If true, the compiler will generate skip instructions.
+    /// Defaults to false.
+    pub fn has_skip_insts(mut self, has_skip_insts: bool) -> Self {
+        self.has_skip_insts = has_skip_insts;
         self
     }
 
@@ -151,32 +160,53 @@ impl Compiler {
         // matching engine itself.
         // println!("Compiling: {:?}", expr);
         let mut dotstar_patch = Patch { hole: Hole::None, entry: 0 };
-        let mut sc_dotstar_patch = Patch { hole: Hole::None, entry: 0 };
         self.compiled.is_anchored_start = expr.is_anchored_start();
         self.compiled.is_anchored_end = expr.is_anchored_end();
         if self.compiled.needs_dotstar() {
             dotstar_patch = try!(self.c_dotstar());
-            sc_dotstar_patch = try!(self.sc_dotstar());
             self.compiled.start = dotstar_patch.entry;
         }
         self.compiled.captures = vec![None];
         let patch = try!(self.c_capture(0, expr));
-        let sc_patch = try!(self.sc_capture(0, |c| { c.sc(expr) }));
         if self.compiled.needs_dotstar() {
             self.fill(dotstar_patch.hole, patch.entry);
-            self.sc_fill(sc_dotstar_patch.hole, sc_patch.entry);
         } else {
             self.compiled.start = patch.entry;
-            self.compiled.skip_start = sc_patch.entry;
         }
         self.fill_to_next(patch.hole);
         self.compiled.matches = vec![self.insts.len()];
         self.push_compiled(Inst::Match(0));
 
+        if self.has_skip_insts {
+            try!(self.sc_compile_one(expr));
+        }
+
+        self.compile_finish()
+    }
+
+    fn sc_compile_one(&mut self, expr: &Expr) -> result::Result<(), Error> {
+        // if required, start the party with a dotstar
+        let mut sc_dotstar_patch = Patch { hole: Hole::None, entry: 0 };
+        if self.compiled.needs_dotstar() {
+            sc_dotstar_patch = try!(self.sc_dotstar());
+        }
+
+        // compile the actual expression
+        let sc_patch = try!(self.sc_capture(0, |c| { c.sc(expr) }));
+
+        // fuse the leading dotstar with the inner expression,
+        // if required.
+        if self.compiled.needs_dotstar() {
+            self.sc_fill(sc_dotstar_patch.hole, sc_patch.entry);
+        } else {
+            self.compiled.skip_start = sc_patch.entry;
+        }
+
+        // wind down the proceedings with a match instruction.
         let sc_next = self.sc_push_compiled(SkipInst::SkipMatch(0));
         self.sc_continue(sc_patch, sc_next);
 
-        self.compile_finish()
+        Ok(())
     }
 
     fn compile_many(
@@ -224,6 +254,7 @@ impl Compiler {
             self.skip_insts.into_iter().map(|si| si.unwrap()).collect();
         self.compiled.byte_classes = self.byte_classes.byte_classes();
         self.compiled.capture_name_idx = Arc::new(self.capture_name_idx);
+        self.compiled.has_skip_insts = self.has_skip_insts;
         Ok(self.compiled)
     }
 
