@@ -22,8 +22,7 @@ use utf8_ranges::{Utf8Range, Utf8Sequence, Utf8Sequences};
 use prog::{
     Program, Inst, InstPtr, EmptyLook,
     InstSave, InstSplit, InstEmptyLook, InstChar, InstRanges, InstBytes,
-    SkipInst, InstSkipByte, InstSkipRanges, RUN_QUEUE_RING_SIZE,
-    InstScanLiteral
+    SkipInst, RUN_QUEUE_RING_SIZE, InstScanLiteral, InstByte, InstSkip
 };
 
 use literals::{LiteralSearcher};
@@ -368,7 +367,8 @@ impl Compiler {
         try!(self.check_size());
         match *expr {
             Empty => Ok(Patch { hole: Hole::None, entry: self.insts.len() }),
-            Literal { ref chars, casei } => self.sc_literal(chars, casei),
+            Literal { ref chars, casei } =>
+                self.sc_literal(chars, casei, false),
             Repeat { ref e, r, greedy } => self.sc_repeat(e, r, greedy),
             AnyChar => self.sc_class(&[ClassRange {
                 // For now we just support ascii. In the event that we
@@ -419,6 +419,22 @@ impl Compiler {
         }
     }
 
+    /// Compile an expression in the context of a branch.
+    /// For example, given the expression /aaaaa(?:bb|cc|dd)/,
+    /// aaaaa would be compiled by the ordinary `sc` method,
+    /// while `bb`, `cc`, and `dd` would be compiled in
+    /// a branch context.
+    fn sc_branch(&mut self, expr: &Expr) -> Result {
+        use syntax::Expr::*;
+
+        try!(self.check_size());
+        match *expr {
+            Literal { ref chars, casei } =>
+                self.sc_literal(chars, casei, true),
+            ref e => self.sc(e),
+        }
+
+    }
 
     fn c_capture(&mut self, first_slot: usize, expr: &Expr) -> Result {
         if self.num_exprs > 1 || self.compiled.is_dfa {
@@ -508,7 +524,14 @@ impl Compiler {
         Ok(Patch { hole: hole, entry: entry })
     }
 
-    fn sc_literal(&mut self, chars: &[char], _casei: bool) -> Result {
+    /// Compile a literal into a skip. This routine must not
+    /// be used to compile a literal at the start of a branch.
+    fn sc_literal(
+        &mut self,
+        chars: &[char],
+        _casei: bool,
+        branch: bool // are we in branch position?
+    ) -> Result {
         // TODO(ethan):casei does not support case insensitivity
         use ::std::ascii::AsciiExt;
 
@@ -522,12 +545,20 @@ impl Compiler {
 
         let mut skip_start = 0;
         let mut p = Patch { hole: Hole::None, entry: self.sc_next() };
-        while skip_start < chars.len() {
+
+        if branch {
             let mut b = [0; 1];
-            chars[skip_start].encode_utf8(&mut b);
+            chars[0].encode_utf8(&mut b);
 
             let next = self.sc_push_one(SkipInstHole::Byte {
-                c: b[0],
+                c: b[0]
+            });
+            p = self.sc_continue(p, next);
+            skip_start += 1;
+        }
+
+        while skip_start < chars.len() {
+            let next = self.sc_push_one(SkipInstHole::Skip {
                 skip: if chars.len() - skip_start > max_skip {
                           max_skip
                       } else {
@@ -575,7 +606,7 @@ impl Compiler {
         assert!(!ranges.is_empty());
         use ::std::ascii::AsciiExt;
 
-        let ranges: Vec<(u8, u8)> = try!(ranges.iter().map(|r| {
+        let ranges: Vec<ByteRange> = try!(ranges.iter().map(|r| {
             if !(r.start.is_ascii() && r.end.is_ascii()) {
                 return Err(Error::SkipUnsupported(String::from("utf8")));
             }
@@ -586,14 +617,10 @@ impl Compiler {
             let mut b2 = [0; 1];
             r.end.encode_utf8(&mut b2);
 
-            Ok((b1[0], b2[0]))
-        }).collect::<result::Result<Vec<(u8, u8)>, Error>>());
+            Ok(ByteRange { start: b1[0], end: b2[0] })
+        }).collect::<result::Result<Vec<ByteRange>, Error>>());
 
-        Ok(if ranges.len() == 1 && ranges[0].0 == ranges[0].1 {
-            self.sc_push_one(SkipInstHole::Byte { c: ranges[0].0, skip: 1 })
-        } else {
-            self.sc_push_one(SkipInstHole::Ranges { ranges: ranges, skip: 1 })
-        })
+        self.sc_class_bytes(&ranges)
     }
 
     fn c_bytes(&mut self, bytes: &[u8], casei: bool) -> Result {
@@ -653,14 +680,43 @@ impl Compiler {
     fn sc_class_bytes(&mut self, ranges: &[ByteRange]) -> Result {
         debug_assert!(!ranges.is_empty());
 
-        let ranges: Vec<(u8, u8)> = 
-            ranges.iter().map(|r| (r.start, r.end)).collect();
+        if ranges.len() == 1 && ranges[0].start == ranges[0].end {
+            return Ok(self.sc_push_one(SkipInstHole::Byte {
+                c: ranges[0].start
+            }));
+        }
+            
+        let mut holes = vec![];
 
-        Ok(if ranges.len() == 1 && ranges[0].0 == ranges[0].1 {
-            self.sc_push_one(SkipInstHole::Byte { c: ranges[0].0, skip: 1 })
-        } else {
-            self.sc_push_one(SkipInstHole::Ranges { ranges: ranges, skip: 1 })
-        })
+        let mut p = Patch { hole: Hole::None, entry: self.sc_next() };
+        for r in ranges[0..ranges.len() - 1].iter() {
+            let Patch { hole: split_hole, entry: split_entry } =
+                    self.sc_push_split_patch();
+
+            let inner = self.sc_push_one(SkipInstHole::Bytes {
+                start: r.start,
+                end: r.end,
+            });
+            let half_split =
+                self.sc_fill_split(split_hole, Some(inner.entry), None);
+            holes.push(inner.hole);
+
+            p = self.sc_continue(p, Patch {
+                hole: half_split,
+                entry: split_entry
+            });
+        }
+
+        // the last expression does not get a branch
+        let last_r = &ranges[ranges.len() - 1];
+        let next = self.sc_push_one(SkipInstHole::Bytes {
+            start: last_r.start,
+            end: last_r.end,
+        });
+        p = self.sc_continue(p, next);
+        holes.push(p.hole);
+
+        Ok(Patch { hole: Hole::Many(holes), entry: p.entry })
     }
 
     fn c_empty_look(&mut self, look: EmptyLook) -> Result {
@@ -819,7 +875,9 @@ impl Compiler {
                         // Now emit the capturing scan while jumping
                         // over the literal itself.
                         let next = try!(self.sc_capture(2 * idx, |c| {
-                            c.sc_literal(chars, casei)
+                            // We can never be in branch position here.
+                            // We already found the literal.
+                            c.sc_literal(chars, casei, false)
                         }));
                         p = self.sc_continue(p, next);
 
@@ -839,7 +897,9 @@ impl Compiler {
             let next = try!(self.sc_concat(repeats.into_iter().map(|x| *x)));
             p = self.sc_continue(p, next);
 
-            let next = try!(self.sc(term));
+            // The expression which terminates a branch instruction is
+            // in branch position.
+            let next = try!(self.sc_branch(term));
             p = self.sc_continue(p, next);
         }
 
@@ -891,7 +951,7 @@ impl Compiler {
             let Patch { hole: split_hole, entry: split_entry } =
                     self.sc_push_split_patch();
 
-            let inner = try!(self.sc(e));
+            let inner = try!(self.sc_branch(e));
             let half_split =
                 self.sc_fill_split(split_hole, Some(inner.entry), None);
             holes.push(inner.hole);
@@ -982,7 +1042,7 @@ impl Compiler {
     ) -> Result {
         let Patch { hole: split_hole, entry: split_entry } =
             self.sc_push_split_patch();
-        let inner = try!(self.sc(expr));
+        let inner = try!(self.sc_branch(expr));
 
         let split_hole = if greedy {
             self.sc_fill_split(split_hole, Some(inner.entry), None)
@@ -1029,7 +1089,7 @@ impl Compiler {
     ) -> Result {
         let Patch { hole: split_hole, entry: split_entry} =
             self.sc_push_split_patch();
-        let inner = try!(self.sc(expr));
+        let inner = try!(self.sc_branch(expr));
 
         // establish the loopback epsilon transition
         self.sc_fill(inner.hole, split_entry);
@@ -1075,7 +1135,7 @@ impl Compiler {
         expr: &Expr,
         greedy: bool,
     ) -> Result {
-        let inner = try!(self.sc(expr));
+        let inner = try!(self.sc_branch(expr));
         let Patch { hole: split_hole, entry: split_entry } =
             self.sc_push_split_patch();
 
@@ -1197,7 +1257,7 @@ impl Compiler {
         let mut holes = vec![];
         for _ in min..max {
             let split = self.sc_push_split_patch();
-            let expr_next = try!(self.sc(expr));
+            let expr_next = try!(self.sc_branch(expr));
             if greedy {
                 holes.push(self.sc_fill_split(
                         split.hole, Some(expr_next.entry), None));
@@ -1571,8 +1631,9 @@ impl MaybeInst<SkipInst, SkipInstHole> {
 #[derive(Clone, Debug)]
 enum SkipInstHole {
     Save { slot: usize },
-    Byte { c: u8, skip: usize },
-    Ranges { ranges: Vec<(u8, u8)>, skip: usize },
+    Byte { c: u8 },
+    Bytes { start: u8, end: u8 },
+    Skip { skip: usize },
     ScanLiteral { literal: LiteralSearcher, start: bool },
 }
 
@@ -1583,17 +1644,20 @@ impl FillTo<SkipInst> for SkipInstHole {
                 goto: goto,
                 slot: slot,
             }),
-            SkipInstHole::Byte { c, skip } =>
-                SkipInst::SkipSkipByte(InstSkipByte {
+            SkipInstHole::Skip { skip } => SkipInst::SkipSkip(InstSkip {
+                goto: goto,
+                skip: skip,
+            }),
+            SkipInstHole::Byte { c } =>
+                SkipInst::SkipByte(InstByte {
                     goto: goto,
                     c: c,
-                    skip: skip,
                 }),
-            SkipInstHole::Ranges { ref ranges, skip } =>
-                SkipInst::SkipSkipRanges(InstSkipRanges {
+            SkipInstHole::Bytes { start, end } =>
+                SkipInst::SkipBytes(InstBytes {
                     goto: goto,
-                    ranges: ranges.clone(),
-                    skip: skip,
+                    start: start,
+                    end: end,
                 }),
             SkipInstHole::ScanLiteral { ref literal, start } =>
                 SkipInst::SkipScanLiteral(InstScanLiteral {

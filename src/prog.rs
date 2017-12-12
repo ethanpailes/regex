@@ -571,16 +571,15 @@ pub enum SkipInst {
     /// program, preferring goto1 in InstSplit.
     SkipSplit(InstSplit),
 
-    /// SkipByte requires the regex program to match the character in
-    /// InstSkipByte at the current position in the input. If successful,
-    /// it directs the current thread to skip forward by a fixed number
-    /// of chars.
-    SkipSkipByte(InstSkipByte),
+    /// Moves the current thread's string pointer forward by the
+    /// given number of bytes
+    SkipSkip(InstSkip),
 
-    /// SkipRange requires the current position in the input to fall
-    /// within the given range. The current thread dies if this is not
-    /// true.
-    SkipSkipRanges(InstSkipRanges),
+    /// See Char
+    SkipByte(InstByte),
+
+    /// See Ranges
+    SkipBytes(InstBytes),
 
     // TODO(ethan): if this ends up getting us a win, try benchmarking
     //              it alone. See about adding it to the normal engine
@@ -594,27 +593,24 @@ pub enum SkipInst {
 
 /// Representation of the SkipByte instruction.
 #[derive(Clone, Debug)]
-pub struct InstSkipByte {
+pub struct InstByte {
     /// The next location to execute in the program if this instruction
     /// succeeds.
     pub goto: InstPtr,
     /// The character to test.
     pub c: u8,
-    /// The distance to skip forward in the input.
-    pub skip: usize,
 }
 
-/// Representation of the SkipRange instruction.
+/// Representation of the Skip instruction.
 #[derive(Clone, Debug)]
-pub struct InstSkipRanges {
+pub struct InstSkip {
     /// The next location to execute in the program if this instruction
     /// succeeds.
     pub goto: InstPtr,
-    /// The set of Ascii scalar value ranges to test.
-    pub ranges: Vec<(u8, u8)>,
-    /// The distance to skip forward in the input.
+    /// The character to test.
     pub skip: usize,
 }
+
 
 /// Representation of the InstScanLiteral instruction.
 #[derive(Clone, Debug)]

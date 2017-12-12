@@ -337,48 +337,56 @@ impl<'r, I: Input> Fsm<'r, I> {
                 }
 
                 match self.prog.skip_insts[ip] {
-                    SkipSkipByte(ref inst) => {
+                    SkipSkip(ref inst) => {
+                        self.add(run_queue, ip, inst.goto, sp + inst.skip);
+                        false
+                    }
+                    SkipByte(ref inst) => {
                         trace!("step: comparing byte={} c={}",
                                self.input.as_bytes()[sp], inst.c);
                         if inst.c == self.input.as_bytes()[sp] {
-                            self.add(run_queue, ip, inst.goto, sp + inst.skip);
+                            self.add(run_queue, ip, inst.goto, sp + 1);
                         }
                         false
-                    },
-                    SkipSkipRanges(ref inst) => {
+                    }
+                    SkipBytes(ref inst) => {
                         let c = self.input.as_bytes()[sp];
-                        if inst.ranges.iter()
-                               .any(|&(start, end)| start <= c && c <= end) {
-                            self.add(run_queue, ip, inst.goto, sp + inst.skip);
+                        if inst.start <= c && c <= inst.end {
+                            self.add(run_queue, ip, inst.goto, sp + 1);
                         }
                         false
                     }
                     SkipScanLiteral(ref inst) => {
-                        let lit_loc = inst.literal.find(
-                                            &self.input.as_bytes()[sp..]);
+                        // how far do we want to go?
+                        let new_sp = match self.literal_scan_table[ip] {
+                            Some(nsp) => nsp,
+                            None => {
+                                let lit_loc = inst.literal.find(
+                                        &self.input.as_bytes()[sp..]);
+                                if let Some((lit_start, lit_end)) = lit_loc {
+                                    if inst.start {
+                                        sp + lit_start
+                                    } else {
+                                        sp + lit_end
+                                    }
+                                } else {
+                                    // allow the thread to die
+                                    return false;
+                                }
+                            }
+                        };
 
-                        if let Some((lit_start, lit_end)) = lit_loc {
-                            // how far do we want to go?
-                            let new_sp = match self.literal_scan_table[ip] {
-                                Some(nsp) => nsp,
-                                None => if inst.start {
-                                            sp + lit_start
-                                        } else {
-                                            sp + lit_end
-                                        }
-                            };
+                        // how far can we actually go?
+                        let tgt_sp = if new_sp - sp >= RUN_QUEUE_RING_SIZE {
+                            self.literal_scan_table[ip] = Some(new_sp);
+                            sp + (RUN_QUEUE_RING_SIZE - 1)
+                        } else {
+                            self.literal_scan_table[ip] = None;
+                            new_sp
+                        };
 
-                            // how far can we actually go?
-                            let tgt_sp = if new_sp - sp >= RUN_QUEUE_RING_SIZE {
-                                self.literal_scan_table[ip] = Some(new_sp);
-                                sp + (RUN_QUEUE_RING_SIZE - 1)
-                            } else {
-                                self.literal_scan_table[ip] = None;
-                                new_sp
-                            };
+                        self.add(run_queue, ip, inst.goto, tgt_sp);
 
-                            self.add(run_queue, ip, inst.goto, tgt_sp);
-                        }
                         false
                     }
                     ref inst => unreachable!("unhandled inst: {:?}", inst),
@@ -451,24 +459,31 @@ impl<'r, I: Input> Fsm<'r, I> {
                             pos: thread_caps[inst.slot],
                         });
                         thread_caps[inst.slot] = Some(sp);
-                        trace!("add_step: (ip_caps={} ip={} sp={}) save caps={:?}",
-                                ip_caps, ip, sp, thread_caps);
+                        trace!(
+                            "add_step: (ip_caps={} ip={} sp={}) save caps={:?}",
+                            ip_caps, ip, sp, thread_caps);
                     }
                     ip = inst.goto;
                 }
                 SkipSplit(ref inst) => {
+                    trace!(
+                        "add_step: (ip_caps={} ip={} sp={}) split g1={} g2={}",
+                        ip_caps, ip, sp, inst.goto1, inst.goto2);
+
                     self.stack.push(FollowEpsilon::IP(inst.goto2));
-                    trace!("add_step: (ip_caps={} ip={} sp={}) split g1={} g2={}",
-                                ip_caps, ip, sp, inst.goto1, inst.goto2);
                     ip = inst.goto1;
                 }
+
+                // terminal instructions
                 SkipScanLiteral(_) | SkipMatch(_) |
-                SkipSkipByte(_) | SkipSkipRanges(_) => {
+                SkipByte(_) | SkipBytes(_) | SkipSkip(_) => {
+                    trace!(
+                        "add_step: (ip_caps={} ip={} sp={}) adding leaf thread",
+                        ip_caps, ip, sp);
+
                     // put internally makes sure that we don't double
                     // push something.
                     run_queue.put(ip, sp);
-                    trace!("add_step: (ip_caps={} ip={} sp={}) adding leaf thread",
-                                ip_caps, ip, sp);
                     run_queue.copy_caps_to(ip_caps, ip, sp);
                     return;
                 }
