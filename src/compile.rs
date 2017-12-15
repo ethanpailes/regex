@@ -805,8 +805,11 @@ impl Compiler {
         term: &Expr
         ) -> Result {
         use syntax::Expr::*;
-        // TODO(ethan): This does not respect the greedyness.
-        //              I need to do that.
+
+        let greedy = match repeats.last() {
+            Some(& &Repeat { e: _, r: _, greedy: g }) => g,
+            _ => unreachable!("last repeat is not a repeat after all!"),
+        };
 
         // TODO(ethan): If the repeated patterns contain capture groups
         //              this optimization is not ligit.
@@ -834,8 +837,11 @@ impl Compiler {
             let Patch { hole: split_hole, entry: split_entry } =
                 compiler.sc_push_split_patch();
 
-            let split_hole =
-                compiler.sc_fill_split(split_hole, Some(scan.entry), None);
+            let split_hole = if greedy {
+                compiler.sc_fill_split(split_hole, Some(scan.entry), None)
+            } else {
+                compiler.sc_fill_split(split_hole, None, Some(scan.entry))
+            };
 
             let scan = compiler.sc_continue(scan, Patch {
                 hole: split_hole,

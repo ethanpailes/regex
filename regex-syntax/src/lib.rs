@@ -69,6 +69,7 @@ assert_eq!(err.kind(), &ErrorKind::UnclosedParen);
 mod literals;
 mod parser;
 mod unicode;
+mod visitor;
 
 use std::ascii;
 use std::char;

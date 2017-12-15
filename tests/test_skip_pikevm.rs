@@ -94,22 +94,28 @@ fn spike_dotstar() {
     assert_eq!("a".as_bytes(), &caps[1]);
 }
 
-//
-// Backlog of tests that fail or pass when I don't understand why
-//
-
-// fails
 #[test]
 fn spike_kleene_star_twoc_lazy() {
     let re = spike_re!("c*?c");
     let caps = re.captures("cc".as_bytes()).unwrap();
     assert_eq!("c".as_bytes(), &caps[0]);
 
-    let caps = re.captures(b"ccc").unwrap();
+    let caps = re.captures(b"cccc").unwrap();
     assert_eq!("c".as_bytes(), &caps[0]);
 }
 
-// fails
+#[test]
+fn spike_capture_repeat() {
+    let re = spike_re!("(?:a(b))*baz");
+    let caps = re.captures(b"ababbaz").unwrap();
+    assert_eq!(b"b", &caps[1]);
+}
+
+//
+// Backlog of tests that fail or pass when I don't understand why
+//
+
+// fails because of bad scan opt
 #[test]
 fn spike_astar_comma() {
     let re = spike_re!("a*,(.)");
