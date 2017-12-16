@@ -9,27 +9,33 @@ use {
 /// A `SyntaxVisitor` can be used to perform analysis and transformations
 /// on an `Expr`.
 pub trait SyntaxVisitor: Sized {
-    fn visit_expr(&self, expr: &Expr) {
+    /// Visit expressions
+    fn visit_expr(&mut self, expr: &Expr) {
         expr.visit_children(self)
     }
 
-    fn visit_repeater(&self, repeater: &Repeater) {
+    /// Visit repetitions
+    fn visit_repeater(&mut self, repeater: &Repeater) {
         repeater.visit_children(self)
     }
 
-    fn visit_char_class(&self, char_class: &CharClass) {
+    /// Visit char classes
+    fn visit_char_class(&mut self, char_class: &CharClass) {
         char_class.visit_children(self)
     }
 
-    fn visit_class_range(&self, class_range: &ClassRange) {
+    /// Visit class ranges
+    fn visit_class_range(&mut self, class_range: &ClassRange) {
         class_range.visit_children(self)
     }
 
-    fn visit_byte_class(&self, byte_class: &ByteClass) {
+    /// Visit byte classes
+    fn visit_byte_class(&mut self, byte_class: &ByteClass) {
         byte_class.visit_children(self)
     }
 
-    fn visit_byte_range(&self, class_range: &ByteRange) {
+    /// Visit byte ranges
+    fn visit_byte_range(&mut self, class_range: &ByteRange) {
         class_range.visit_children(self)
     }
 
@@ -37,26 +43,32 @@ pub trait SyntaxVisitor: Sized {
     // Mutable methods
     //
 
+    /// Mutable version of the above.
     fn visit_expr_mut(&mut self, expr: &mut Expr) {
         expr.visit_children_mut(self)
     }
 
+    /// Mutable version of the above.
     fn visit_repeater_mut(&mut self, repeater: &mut Repeater) {
         repeater.visit_children_mut(self)
     }
 
+    /// Mutable version of the above.
     fn visit_char_class_mut(&mut self, char_class: &mut CharClass) {
         char_class.visit_children_mut(self)
     }
 
+    /// Mutable version of the above.
     fn visit_class_range_mut(&mut self, class_range: &mut ClassRange) {
         class_range.visit_children_mut(self)
     }
 
+    /// Mutable version of the above.
     fn visit_byte_class_mut(&mut self, byte_class: &mut ByteClass) {
         byte_class.visit_children_mut(self)
     }
 
+    /// Visit byte ranges
     fn visit_byte_range_mut(&mut self, class_range: &mut ByteRange) {
         class_range.visit_children_mut(self)
     }
@@ -69,40 +81,35 @@ pub trait SyntaxVisitable {
     ///
     /// This method is not strictly required for the visitor
     /// mechanics to work, but it is a nice convenience method.
-    fn visit_node<V>(&self, visitor: &V)
+    fn visit_node<V>(&self, visitor: &mut V)
         where V: SyntaxVisitor;
 
     /// Recursively visit each of the `SyntaxVisitable` nodes
     /// which are direct children of the current node.
-    fn visit_children<V>(&self, visitor: &V)
+    fn visit_children<V>(&self, visitor: &mut V)
         where V: SyntaxVisitor;
 
     //
     // Mutable methods
     //
 
-    /// Just visit the current node with the right visit method of
-    /// the given visitor.
-    ///
-    /// This method is not strictly required for the visitor
-    /// mechanics to work, but it is a nice convenience method.
+    /// Mutable version of the above.
     fn visit_node_mut<V>(&mut self, visitor: &mut V)
         where V: SyntaxVisitor;
 
-    /// Recursively visit each of the `SyntaxVisitable` nodes
-    /// which are direct children of the current node.
+    /// Mutable version of the above.
     fn visit_children_mut<V>(&mut self, visitor: &mut V)
         where V: SyntaxVisitor;
 }
 
 impl SyntaxVisitable for Expr {
-    fn visit_node<V>(&self, visitor: &V)
+    fn visit_node<V>(&self, visitor: &mut V)
         where V: SyntaxVisitor
     {
         visitor.visit_expr(self)
     }
 
-    fn visit_children<V>(&self, visitor: &V)
+    fn visit_children<V>(&self, visitor: &mut V)
         where V: SyntaxVisitor
     {
         match self {
@@ -164,13 +171,13 @@ impl SyntaxVisitable for Expr {
 }
 
 impl SyntaxVisitable for Repeater {
-    fn visit_node<V>(&self, visitor: &V)
+    fn visit_node<V>(&self, visitor: &mut V)
         where V: SyntaxVisitor
     {
         visitor.visit_repeater(self)
     }
 
-    fn visit_children<V>(&self, _visitor: &V)
+    fn visit_children<V>(&self, _visitor: &mut V)
         where V: SyntaxVisitor
     {
         // no-op
@@ -192,13 +199,13 @@ impl SyntaxVisitable for Repeater {
 }
 
 impl SyntaxVisitable for CharClass {
-    fn visit_node<V>(&self, visitor: &V)
+    fn visit_node<V>(&self, visitor: &mut V)
         where V: SyntaxVisitor
     {
         visitor.visit_char_class(self)
     }
 
-    fn visit_children<V>(&self, visitor: &V)
+    fn visit_children<V>(&self, visitor: &mut V)
         where V: SyntaxVisitor
     {
         for cr in &self.ranges {
@@ -223,13 +230,13 @@ impl SyntaxVisitable for CharClass {
 }
 
 impl SyntaxVisitable for ClassRange {
-    fn visit_node<V>(&self, visitor: &V)
+    fn visit_node<V>(&self, visitor: &mut V)
         where V: SyntaxVisitor
     {
         visitor.visit_class_range(self)
     }
 
-    fn visit_children<V>(&self, _visitor: &V)
+    fn visit_children<V>(&self, _visitor: &mut V)
         where V: SyntaxVisitor
     {
         // no-op
@@ -251,13 +258,13 @@ impl SyntaxVisitable for ClassRange {
 }
 
 impl SyntaxVisitable for ByteClass {
-    fn visit_node<V>(&self, visitor: &V)
+    fn visit_node<V>(&self, visitor: &mut V)
         where V: SyntaxVisitor
     {
         visitor.visit_byte_class(self)
     }
 
-    fn visit_children<V>(&self, visitor: &V)
+    fn visit_children<V>(&self, visitor: &mut V)
         where V: SyntaxVisitor
     {
         for br in &self.ranges {
@@ -282,13 +289,13 @@ impl SyntaxVisitable for ByteClass {
 }
 
 impl SyntaxVisitable for ByteRange {
-    fn visit_node<V>(&self, visitor: &V)
+    fn visit_node<V>(&self, visitor: &mut V)
         where V: SyntaxVisitor
     {
         visitor.visit_byte_range(self)
     }
 
-    fn visit_children<V>(&self, _visitor: &V)
+    fn visit_children<V>(&self, _visitor: &mut V)
         where V: SyntaxVisitor
     {
         // no-op

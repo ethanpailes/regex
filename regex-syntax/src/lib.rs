@@ -91,6 +91,8 @@ use parser::{Flags, Parser};
 
 pub use literals::{Literals, Lit};
 
+pub use visitor::{SyntaxVisitor, SyntaxVisitable};
+
 /// A regular expression abstract syntax tree.
 ///
 /// An `Expr` represents the abstract syntax of a regular expression.

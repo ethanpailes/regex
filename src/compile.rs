@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use syntax::{
     Expr, Repeater, CharClass, ClassRange, ByteClass, ByteRange,
-    is_word_byte, Literals, Lit
+    is_word_byte, Literals, Lit, SyntaxVisitor, SyntaxVisitable
 };
 use utf8_ranges::{Utf8Range, Utf8Sequence, Utf8Sequences};
 
@@ -804,6 +804,7 @@ impl Compiler {
         repeats: &[&Expr], // TODO(ethan): perform the containment optimization
         term: &Expr
         ) -> Result {
+        use std::ops::Deref;
         use syntax::Expr::*;
 
         let greedy = match repeats.last() {
@@ -814,13 +815,9 @@ impl Compiler {
         // TODO(ethan): If the repeated patterns contain capture groups
         //              this optimization is not ligit.
 
-        // TODO(ethan): 
-        //
-        // I need to think harder about weather it is ok to
-        // nondeterministicly split at the end of the scan. We know
-        // that the literal always appears after the repeated pattern,
-        // so I think it is ok to always scan forward and then try
-        // to keep parsing after the repetition... hhhmm.
+        // Scan forward to the literal specified by `chars`. If
+        // `start` then drop us off at the beginning of the
+        // literal, otherwise drop us off at the end.
         let sc_literal_scan = |compiler: &mut Self,
                                chars: &Vec<char>,
                                start: bool| {
@@ -853,8 +850,10 @@ impl Compiler {
 
         let mut p = Patch { hole: Hole::None, entry: self.sc_next() };
 
-        use std::ops::Deref;
-        let can_scan = match term {
+        // if any of the repetitions contain a capture, we can't handle it.
+        let can_scan = ! repeats.iter()
+                                .any(|e| ContainsCaptureVisitor::check(*e));
+        let can_scan = can_scan && match term {
             // TODO(ethan): case sensativity
             &Literal { ref chars, casei: _ } => {
                 let next = sc_literal_scan(self, chars, false);
@@ -1913,6 +1912,29 @@ fn u32_to_usize(n: u32) -> usize {
     }
     n as usize
 }
+
+/// A visitor to decide if a given expression contains a capture.
+struct ContainsCaptureVisitor(bool);
+impl ContainsCaptureVisitor {
+    /// Returns true if the given AST node contains a capture
+    /// group, false otherwise.
+    fn check<V>(node: &V) -> bool 
+        where V: SyntaxVisitable
+    {
+        let mut ccv = ContainsCaptureVisitor(false);
+        node.visit_node(&mut ccv);
+        ccv.0
+    }
+}
+impl SyntaxVisitor for ContainsCaptureVisitor {
+    fn visit_expr(&mut self, expr: &Expr) {
+        match expr {
+            &Expr::Group { e: _, i: _, name: _ } => self.0 = true,
+            e => e.visit_children(self),
+        }
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
