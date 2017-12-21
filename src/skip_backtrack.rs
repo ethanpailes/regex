@@ -36,6 +36,16 @@ type Bits = u32;
 const BIT_SIZE: usize = 32;
 const MAX_SIZE_BYTES: usize = 256 * (1 << 10); // 256 KB
 
+// Flip to true for debugging
+const TRACE: bool = true;
+macro_rules! trace {
+    ($($tts:tt)*) => {
+        if TRACE {
+            println!($($tts)*);
+        }
+    }
+}
+
 /// Returns true iff the given regex and input should be executed by this
 /// engine with reasonable memory usage.
 pub fn should_exec(num_insts: usize, text_len: usize) -> bool {
@@ -106,6 +116,17 @@ impl<'a, 'r, 's, I: Input> Bounded<'a, 'r, 's, I> {
             slots: slots,
             m: cache,
         };
+
+        trace!("");
+        trace!("======================== PROG =============================");
+        if TRACE {
+            for (inst, i) in prog.skip_insts.iter().zip(0..) {
+                trace!("{:04}: {:?}", i, inst);
+            }
+        }
+        trace!("====================== END PROG ============================");
+        trace!("");
+
         b.exec_(start)
     }
 
@@ -252,10 +273,24 @@ impl<'a, 'r, 's, I: Input> Bounded<'a, 'r, 's, I> {
                     }
                 }
                 SkipSkip(ref inst) => {
-                    unreachable!("unimpl")
+                    ip = inst.goto;
+                    sp += inst.skip;
                 }
                 SkipScanLiteral(ref inst) => {
-                    unreachable!("unimpl")
+                    ip = inst.goto;
+
+                    let lit_loc = inst.literal.find(
+                            &self.input.as_bytes()[sp..]);
+                    sp += if let Some((lit_start, lit_end)) = lit_loc {
+                        if inst.start {
+                            lit_start
+                        } else {
+                            lit_end
+                        }
+                    } else {
+                        // allow the thread to die
+                        return false;
+                    };
                 }
             }
         }

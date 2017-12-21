@@ -58,17 +58,6 @@ fn skip_kleene_star() {
 }
 
 #[test]
-fn skip_two_rep_caps() {
-    let re = regex!("(aaaa)(bbbbbb)*");
-    let haystack = format!("{}{}",
-                      String::from("aaaa"),
-                      repeat("bbbbbb").take(100).collect::<String>());
-    let caps = re.captures(haystack.as_bytes()).unwrap();
-    assert_eq!(haystack.as_bytes(), &caps[0]);
-    assert_eq!("bbbbbb".as_bytes(), &caps[2]);
-}
-
-#[test]
 fn skip_dotstar() {
     let re = regex!(".*(a)");
     let haystack = format!("{}a", repeat("b").take(100).collect::<String>());
@@ -113,10 +102,23 @@ fn skip_astar_comma() {
     assert_eq!(b"f", &caps[1]);
 }
 
+// failes because of bad branch position optimization
 #[test]
 fn skip_branch_differentiation() {
     let re = regex!("ab.(.)|ac(.).");
     let caps = re.captures(b"acxy").unwrap();
     assert_eq!(b"x", &caps[2]);
+}
+
+// Has an off-by-one error
+#[test]
+fn skip_two_rep_caps() {
+    let re = regex!("(aaaa)(bbbbbb)*");
+    let haystack = format!("{}{}",
+                      String::from("aaaa"),
+                      repeat("bbbbbb").take(100).collect::<String>());
+    let caps = re.captures(haystack.as_bytes()).unwrap();
+    assert_eq!(haystack.as_bytes(), &caps[0]);
+    assert_eq!("bbbbbb".as_bytes(), &caps[2]);
 }
 
