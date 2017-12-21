@@ -282,8 +282,8 @@ impl<'r, I: Input> Fsm<'r, I> {
         // Main execution loop
         loop {
             while let Some((ip, sp)) = run_queue.pop() {
-                // We can nope out of here for the current string
-                // pointer, but we have finish execution of the remaining
+                // We can nope out of here for the current thread 
+                // pointer, but we have to finish execution of the remaining
                 // threads for greedy matching support.
                 if self.step(run_queue, ip, sp, &mut slots) {
                     break;

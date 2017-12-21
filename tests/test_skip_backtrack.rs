@@ -7,7 +7,7 @@ macro_rules! regex_new {
     ($re:expr) => {{
         use regex::internal::ExecBuilder;
         ExecBuilder::new($re)
-            .skip_pikevm()
+            .skip_backtrack()
             .only_utf8(false)
             .build()
             .map(regex::bytes::Regex::from)

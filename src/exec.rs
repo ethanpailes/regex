@@ -17,6 +17,7 @@ use thread_local::CachedThreadLocal;
 use syntax::{Expr, ExprBuilder, Literals};
 
 use backtrack;
+use skip_backtrack;
 use compile::Compiler;
 use dfa;
 use error::Error;
@@ -61,7 +62,7 @@ pub struct ExecNoSyncStr<'c>(ExecNoSync<'c>);
 /// `ExecReadOnly` comprises all read only state for a regex. Namely, all such
 /// state is determined at compile time and never changes during search.
 #[derive(Debug)]
-struct ExecReadOnly {
+pub struct ExecReadOnly {
     /// The original regular expressions given by the caller to compile.
     res: Vec<String>,
     /// A compiled program that is used in the NFA simulation and backtracking.
@@ -172,6 +173,7 @@ impl ExecBuilder {
     ///
     /// Overrides any previous match type configuration.
     pub fn skip(mut self) -> Self {
+        self.options.skip_mode = true;
         self.match_type = Some(MatchType::SkipRegex(MatchSkipRegexType::Auto));
         self
     }
@@ -180,6 +182,7 @@ impl ExecBuilder {
     ///
     /// Overrides any previous match type configuration.
     pub fn skip_pikevm(mut self) -> Self {
+        self.options.skip_mode = true;
         self.match_type = Some(MatchType::SkipRegex(
                                 MatchSkipRegexType::SkipPikeVM));
         self
@@ -189,6 +192,7 @@ impl ExecBuilder {
     ///
     /// Overrides any previous match type configuration.
     pub fn skip_backtrack(mut self) -> Self {
+        self.options.skip_mode = true;
         self.match_type = Some(MatchType::SkipRegex(
                                 MatchSkipRegexType::SkipBacktrack));
         self
@@ -202,6 +206,7 @@ impl ExecBuilder {
     ///
     /// Overrides any previous match type configuration.
     pub fn skip_dfa(mut self) -> Self {
+        self.options.skip_mode = true;
         self.match_type = Some(MatchType::SkipRegex(
                                 MatchSkipRegexType::SkipDfa));
         self
@@ -369,10 +374,8 @@ impl ExecBuilder {
 
         let match_hint = 
             if self.options.skip_mode {
-                // TODO(ethan): switch this to Auto once more than one
-                // backend is implimented.
                 self.match_type.or(
-                    Some(MatchType::SkipRegex(MatchSkipRegexType::SkipPikeVM)))
+                    Some(MatchType::SkipRegex(MatchSkipRegexType::Auto)))
             } else {
                 self.match_type
             };
@@ -985,14 +988,35 @@ impl<'c> ExecNoSync<'c> {
     /// Get the captures with the given skip NFA engine.
     fn captures_skip_nfa_type(
         &self,
-        ty: MatchSkipRegexType,
+        mut ty: MatchSkipRegexType,
         slots: &mut [Slot],
         text: &[u8],
         start: usize
     ) -> Option<(usize, usize)> {
+        if let MatchSkipRegexType::Auto = ty {
+            if skip_backtrack::should_exec(self.ro.nfa.len(), text.len()) {
+                ty = MatchSkipRegexType::SkipBacktrack;
+            } else {
+                ty = MatchSkipRegexType::SkipPikeVM;
+            }
+        }
+
         match ty {
             MatchSkipRegexType::SkipPikeVM => {
                 skip_pikevm::Fsm::exec(
+                    &self.ro.nfa,
+                    self.cache,
+                    slots,
+                    ByteInput::new(text, self.ro.nfa.only_utf8),
+                    start);
+
+                match (slots[0], slots[1]) {
+                    (Some(s), Some(e)) => Some((s, e)),
+                    _ => None,
+                }
+            }
+            MatchSkipRegexType::SkipBacktrack => {
+                skip_backtrack::Bounded::exec(
                     &self.ro.nfa,
                     self.cache,
                     slots,
@@ -1376,7 +1400,7 @@ enum MatchNfaType {
     PikeVM,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MatchSkipRegexType {
     /// Choose between non-Auto alternatives automagically.
     Auto,
@@ -1397,6 +1421,7 @@ pub struct ProgramCacheInner {
     pub pikevm: pikevm::Cache,
     pub skip_pikevm: skip_pikevm::Cache,
     pub backtrack: backtrack::Cache,
+    pub skip_backtrack: skip_backtrack::Cache,
     pub dfa: dfa::Cache,
     pub dfa_reverse: dfa::Cache,
 }
@@ -1407,6 +1432,7 @@ impl ProgramCacheInner {
             pikevm: pikevm::Cache::new(&ro.nfa),
             skip_pikevm: skip_pikevm::Cache::new(),
             backtrack: backtrack::Cache::new(&ro.nfa),
+            skip_backtrack: skip_backtrack::Cache::new(&ro.nfa),
             dfa: dfa::Cache::new(&ro.dfa),
             dfa_reverse: dfa::Cache::new(&ro.dfa_reverse),
         }

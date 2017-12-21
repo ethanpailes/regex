@@ -626,6 +626,7 @@ pub mod bytes {
 }
 
 mod backtrack;
+mod skip_backtrack;
 mod utf8;
 mod compile;
 mod dfa;
