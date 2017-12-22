@@ -90,6 +90,18 @@ fn skip_branch_precidence() {
     assert_eq!(b"x", &caps[1]);
 }
 
+#[test]
+fn skip_two_rep_caps() {
+    let re = regex!("(aaaa)(bbbbbb)*");
+    let haystack = format!("{}{}",
+                      String::from("aaaa"),
+                      repeat("bbbbbb").take(100).collect::<String>());
+    let caps = re.captures(haystack.as_bytes()).unwrap();
+    println!("hslen={} caplen={}", haystack.len(), &caps[0].len());
+    assert_eq!(haystack.as_bytes(), &caps[0]);
+    assert_eq!("bbbbbb".as_bytes(), &caps[2]);
+}
+
 //
 // Backlog of tests that fail or pass when I don't understand why
 //
@@ -109,16 +121,3 @@ fn skip_branch_differentiation() {
     let caps = re.captures(b"acxy").unwrap();
     assert_eq!(b"x", &caps[2]);
 }
-
-// Has an off-by-one error
-#[test]
-fn skip_two_rep_caps() {
-    let re = regex!("(aaaa)(bbbbbb)*");
-    let haystack = format!("{}{}",
-                      String::from("aaaa"),
-                      repeat("bbbbbb").take(100).collect::<String>());
-    let caps = re.captures(haystack.as_bytes()).unwrap();
-    assert_eq!(haystack.as_bytes(), &caps[0]);
-    assert_eq!("bbbbbb".as_bytes(), &caps[2]);
-}
-

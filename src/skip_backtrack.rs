@@ -147,7 +147,7 @@ impl<'a, 'r, 's, I: Input> Bounded<'a, 'r, 's, I> {
         // (Probably because backtracking is limited to such small
         // inputs/regexes in the first place.)
         let visited_len =
-            (self.prog.skip_insts.len() * (self.input.len() + 1) + BIT_SIZE - 1)
+            (self.prog.skip_insts.len() * (self.input.as_bytes().len() + 1) + BIT_SIZE - 1)
             /
             BIT_SIZE;
         self.m.visited.truncate(visited_len);
@@ -273,8 +273,12 @@ impl<'a, 'r, 's, I: Input> Bounded<'a, 'r, 's, I> {
                     }
                 }
                 SkipSkip(ref inst) => {
-                    ip = inst.goto;
-                    sp += inst.skip;
+                    if sp < self.input.as_bytes().len() {
+                        ip = inst.goto;
+                        sp += inst.skip;
+                    } else {
+                        return false;
+                    }
                 }
                 SkipScanLiteral(ref inst) => {
                     ip = inst.goto;
@@ -297,11 +301,11 @@ impl<'a, 'r, 's, I: Input> Bounded<'a, 'r, 's, I> {
     }
 
     fn has_visited(&mut self, ip: InstPtr, sp: usize) -> bool {
-        let k = ip * (self.input.len() + 1) + sp;
-        let k1 = k / BIT_SIZE;
-        let k2 = usize_to_u32(1 << (k & (BIT_SIZE - 1)));
-        if self.m.visited[k1] & k2 == 0 {
-            self.m.visited[k1] |= k2;
+        let k = ip * (self.input.as_bytes().len() + 1) + sp;
+        let word_idx = k / BIT_SIZE;
+        let mask = usize_to_u32(1 << (k & (BIT_SIZE - 1)));
+        if self.m.visited[word_idx] & mask == 0 {
+            self.m.visited[word_idx] |= mask;
             false
         } else {
             true
