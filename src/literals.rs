@@ -9,6 +9,7 @@
 // except according to those terms.
 
 use std::mem;
+use std::fmt;
 
 use aho_corasick::{Automaton, AcAutomaton, FullAcAutomaton};
 use memchr::{memchr, memchr2, memchr3};
@@ -44,7 +45,7 @@ pub struct LiteralSearcher {
 }
 
 #[derive(Clone, Debug)]
-enum Matcher {
+pub enum Matcher {
     /// No literals. (Never advances through the input.)
     Empty,
     /// A set of four or more single byte literals.
@@ -57,6 +58,17 @@ enum Matcher {
     AC(FullAcAutomaton<syntax::Lit>),
     /// A simd accelerated multiple string matcher.
     Teddy128(Teddy),
+}
+
+impl fmt::Display for Matcher {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match *self {
+            Matcher::Empty => write!(f, "Empty"),
+            Matcher::Bytes(ref sbs) => {
+                write!(f, "{:?}", sbs.dense)
+            }
+        }
+    }
 }
 
 impl LiteralSearcher {
@@ -100,15 +112,7 @@ impl LiteralSearcher {
     /// Find the position of a literal in `haystack` if it exists.
     #[inline(always)] // reduces constant overhead
     pub fn find(&self, haystack: &[u8]) -> Option<(usize, usize)> {
-        use self::Matcher::*;
-        match self.matcher {
-            Empty => Some((0, 0)),
-            Bytes(ref sset) => sset.find(haystack).map(|i| (i, i + 1)),
-            SingleMemchr(ref s) => s.find(haystack).map(|i| (i, i + s.len())),
-            SingleBoyerMoore(ref s) => s.find(haystack).map(|i| (i, i + s.len())),
-            AC(ref aut) => aut.find(haystack).next().map(|m| (m.start, m.end)),
-            Teddy128(ref ted) => ted.find(haystack).map(|m| (m.start, m.end)),
-        }
+        self.matcher.find(haystack)
     }
 
     /// Like find, except matches must start at index `0`.
@@ -250,6 +254,20 @@ impl Matcher {
         let pats = lits.literals().to_owned();
         Matcher::AC(AcAutomaton::new(pats).into_full())
     }
+
+    /// Find the position of a literal in `haystack` if it exists.
+    #[inline(always)] // reduces constant overhead
+    pub fn find(&self, haystack: &[u8]) -> Option<(usize, usize)> {
+        match *self {
+            Empty => Some((0, 0)),
+            Bytes(ref sset) => sset.find(haystack).map(|i| (i, i + 1)),
+            SingleMemchr(ref s) => s.find(haystack).map(|i| (i, i + s.len())),
+            SingleBoyerMoore(ref s) => s.find(haystack).map(|i| (i, i + s.len())),
+            AC(ref aut) => aut.find(haystack).next().map(|m| (m.start, m.end)),
+            Teddy128(ref ted) => ted.find(haystack).map(|m| (m.start, m.end)),
+        }
+    }
+
 }
 
 pub enum LiteralIter<'a> {

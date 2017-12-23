@@ -7,7 +7,7 @@ use std::slice;
 use std::sync::Arc;
 
 use input::Char;
-use literals::LiteralSearcher;
+use literals::{LiteralSearcher, Matcher};
 
 /// `InstPtr` represents the index of an instruction in a regex program.
 pub type InstPtr = usize;
@@ -224,6 +224,15 @@ impl fmt::Debug for Program {
                     try!(write!(f, "{:04} {}",
                                 pc, with_goto(pc, inst.goto, s)));
                 }
+                Scan(ref inst) => {
+                    let s = format!(
+                        "Scan(fallback={}, {}, start={})",
+                        inst.goto_fallback,
+                        inst.literal,
+                        inst.start);
+                    try!(write!(f, "{:04} {}",
+                                pc, with_goto(pc, inst.goto, s)));
+                }
             }
             if pc == self.start {
                 try!(write!(f, " (start)"));
@@ -286,6 +295,13 @@ pub enum Inst {
     /// used in conjunction with Split instructions to implement multi-byte
     /// character classes.
     Bytes(InstBytes),
+    /// Scan instructs the engine to scan forward to a particular literal
+    /// using one of the literal searching algorithms found in `literal.rs`.
+    ///
+    /// Not all backends can support scanning, so each scan instruction
+    /// contains a fallback goto pointing to a block of instructions
+    /// which implement the required behavior using typical VM constructs.
+    Scan(InstScan),
 }
 
 impl Inst {
@@ -422,4 +438,24 @@ impl InstBytes {
     pub fn matches(&self, byte: u8) -> bool {
         self.start <= byte && byte <= self.end
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct InstScan {
+    /// The next location to execute in the program if this instruction
+    /// succeeds.
+    pub goto: InstPtr,
+    /// In the (likely) event that the engine can't support scanning
+    /// forward towards a literal, this points to a fallback instruction
+    /// to execute instead.
+    pub goto_fallback: InstPtr,
+    /// The literal to search for.
+    /// TODO(ethan):opt see what difference boxing this makes. I'm worried
+    ///                 about the size.
+    pub literal: Matcher,
+    /// Determines which end of the literal the string pointer will
+    /// be placed at upon a successful scan. We can't always just
+    /// place the string pointer at the end of the literal as you
+    /// might want 
+    pub start: bool,
 }

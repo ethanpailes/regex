@@ -275,7 +275,7 @@ impl<'r, I: Input> Fsm<'r, I> {
                 }
                 false
             }
-            EmptyLook(_) | Save(_) | Split(_) => false,
+            EmptyLook(_) | Save(_) | Split(_) | Scan(_) => false,
         }
     }
 
@@ -321,6 +321,9 @@ impl<'r, I: Input> Fsm<'r, I> {
             }
             nlist.set.insert(ip);
             match self.prog[ip] {
+                Scan(ref inst) => {
+                    ip = inst.goto_fallback;
+                }
                 EmptyLook(ref inst) => {
                     if self.input.is_empty_match(at, inst) {
                         ip = inst.goto;
