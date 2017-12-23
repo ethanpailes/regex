@@ -10,7 +10,7 @@ use input::Char;
 use literals::LiteralSearcher;
 
 // Flip to true for debugging
-const TRACE: bool = true;
+const TRACE: bool = false;
 macro_rules! trace {
     ($($tts:tt)*) => {
         if TRACE {
@@ -859,7 +859,6 @@ impl InstBytes {
 
 #[cfg(test)]
 mod tests {
-    // use super::Compiler;
     use super::{ExecBuilder, Exec};
 
     #[test]
@@ -917,5 +916,4 @@ mod tests {
     }
 
     // TODO:ethan quickcheck properties
-
 }

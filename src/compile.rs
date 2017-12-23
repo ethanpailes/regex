@@ -13,6 +13,16 @@ use std::iter;
 use std::result;
 use std::sync::Arc;
 
+// Flip to true for debugging
+const TRACE: bool = true;
+macro_rules! trace {
+    ($($tts:tt)*) => {
+        if TRACE {
+            println!($($tts)*);
+        }
+    }
+}
+
 use syntax::{
     Expr, Repeater, CharClass, ClassRange, ByteClass, ByteRange,
     is_word_byte, Literals, Lit, SyntaxVisitor, SyntaxVisitable
@@ -69,6 +79,24 @@ impl Compiler {
             byte_classes: ByteClassSet::new(),
             has_skip_insts: false,
         }
+    }
+
+    /// Make a new copy of the compiler with all the same configuration
+    /// information, but an empty instruction list.
+    fn copy_config(&self) -> Self {
+        let c = Compiler {
+            insts: vec![],
+            skip_insts: vec![],
+            compiled: Program::new(),
+            capture_name_idx: HashMap::new(),
+            num_exprs: self.num_exprs,
+            size_limit: self.size_limit,
+            suffix_cache: SuffixCache::new(1000),
+            utf8_seqs: Some(Utf8Sequences::new('\x00', '\x00')),
+            byte_classes: ByteClassSet::new(),
+            has_skip_insts: self.has_skip_insts
+        };
+        c
     }
 
     /// The size of the resulting program is limited by size_limit. If
@@ -184,6 +212,8 @@ impl Compiler {
     }
 
     fn sc_compile_one(&mut self, expr: &Expr) -> result::Result<(), Error> {
+        trace!("sc_compile_one: {:?}", expr);
+
         // if required, start the party with a dotstar
         let mut sc_dotstar_patch = Patch { hole: Hole::None, entry: 0 };
         if self.compiled.needs_dotstar() {
@@ -803,7 +833,7 @@ impl Compiler {
         &mut self,
         repeats: &[&Expr], // TODO(ethan): perform the containment optimization
         term: &Expr
-        ) -> Result {
+    ) -> Result {
         use std::ops::Deref;
         use syntax::Expr::*;
 
@@ -812,41 +842,11 @@ impl Compiler {
             _ => unreachable!("last repeat is not a repeat after all!"),
         };
 
-        // TODO(ethan): If the repeated patterns contain capture groups
-        //              this optimization is not ligit.
+        let repeats_program = try!(self.compile_repeats_prog(repeats));
 
-        // Scan forward to the literal specified by `chars`. If
-        // `start` then drop us off at the beginning of the
-        // literal, otherwise drop us off at the end.
-        let sc_literal_scan = |compiler: &mut Self,
-                               chars: &Vec<char>,
-                               start: bool| {
-            // First, emit the scan instruction.
-            let mut lits = Literals::empty();
-            lits.add(Lit::new(Vec::from(
-                         chars.into_iter().collect::<String>().as_bytes())));
-            let scan = compiler.sc_push_one(SkipInstHole::ScanLiteral {
-                literal: LiteralSearcher::prefixes(lits),
-                start: start,
-            });
+        let all_dotstars = repeats.iter().all(|e| self.expr_is_repeated_any(e));
 
-            // Now non-deterministicly branch back to the start.
-            let Patch { hole: split_hole, entry: split_entry } =
-                compiler.sc_push_split_patch();
-
-            let split_hole = if greedy {
-                compiler.sc_fill_split(split_hole, Some(scan.entry), None)
-            } else {
-                compiler.sc_fill_split(split_hole, None, Some(scan.entry))
-            };
-
-            let scan = compiler.sc_continue(scan, Patch {
-                hole: split_hole,
-                entry: split_entry,
-            });
-
-            scan
-        };
+        trace!("all_dotstars={}", all_dotstars);
 
         let mut p = Patch { hole: Hole::None, entry: self.sc_next() };
 
@@ -856,37 +856,49 @@ impl Compiler {
         let can_scan = can_scan && match term {
             // TODO(ethan): case sensativity
             &Literal { ref chars, casei: _ } => {
-                let next = sc_literal_scan(self, chars, false);
-                p = self.sc_continue(p, next);
-                true
+                if !all_dotstars
+                    && try!(self.lit_in_repeats(&repeats_program, &term)) {
+                    false
+                } else {
+                    let next = self.sc_literal_scan(
+                        chars, false, all_dotstars, greedy);
+                    p = self.sc_continue(p, next);
+                    true
+                }
             }
             &Group { ref e, i: Some(idx), ref name } => {
                 match e.deref() {
                     &Literal { ref chars, casei } => {
-                        // TODO(ethan): remove this code duplication.
-                        if idx >= self.compiled.captures.len() {
-                            self.compiled.captures.push(name.clone());
-                            if let Some(ref name) = *name {
-                                self.capture_name_idx
-                                    .insert(name.to_owned(), idx);
+                        if !all_dotstars
+                            && try!(self.lit_in_repeats(&repeats_program, &term)) {
+                            false
+                        } else {
+                            // TODO(ethan): remove this code duplication.
+                            if idx >= self.compiled.captures.len() {
+                                self.compiled.captures.push(name.clone());
+                                if let Some(ref name) = *name {
+                                    self.capture_name_idx
+                                        .insert(name.to_owned(), idx);
+                                }
                             }
+
+                            // First emit the literal scan, asking the scanner
+                            // to drop us right at the start of the literal
+                            let next = self.sc_literal_scan(
+                                chars, true, all_dotstars, greedy);
+                            p = self.sc_continue(p, next);
+
+                            // Now emit the capturing scan while jumping
+                            // over the literal itself.
+                            let next = try!(self.sc_capture(2 * idx, |c| {
+                                // We can never be in branch position here.
+                                // We already found the literal.
+                                c.sc_literal(chars, casei, false)
+                            }));
+                            p = self.sc_continue(p, next);
+
+                            true
                         }
-
-                        // First emit the literal scan, asking the scanner
-                        // to drop us right at the start of the literal
-                        let next = sc_literal_scan(self, chars, true);
-                        p = self.sc_continue(p, next);
-
-                        // Now emit the capturing scan while jumping
-                        // over the literal itself.
-                        let next = try!(self.sc_capture(2 * idx, |c| {
-                            // We can never be in branch position here.
-                            // We already found the literal.
-                            c.sc_literal(chars, casei, false)
-                        }));
-                        p = self.sc_continue(p, next);
-
-                        true
                     }
                     _ => false
                 }
@@ -897,7 +909,7 @@ impl Compiler {
         };
 
         if !can_scan {
-            // a list of just repetitions will terminate the
+            // a list of just repetitions (no terminator) will terminate the
             // mutal recursion.
             let next = try!(self.sc_concat(repeats.into_iter().map(|x| *x)));
             p = self.sc_continue(p, next);
@@ -910,6 +922,119 @@ impl Compiler {
 
         Ok(p)
     }
+
+    fn lit_in_repeats(
+        &self,
+        repeats: &Option<Program>,
+        lit: &Expr
+    ) -> result::Result<bool, Error> {
+        use syntax::Expr::{Concat, AnyChar, Repeat};
+
+        match repeats {
+            // /.*/ is represented as None to avoid an infinite
+            // recursion. It can always contain any literal.
+            &None => Ok(true),
+            &Some(ref repeats_prog) => {
+                let dotstar = Repeat {
+                    e: Box::new(AnyChar),
+                    r: Repeater::ZeroOrMore,
+                    greedy: true
+                };
+
+                let lit_program = try!(self.copy_config()
+                    .compile_one(&Concat(vec![
+                         dotstar.clone(),
+                         (*lit).clone(),
+                         dotstar])));
+
+                Ok(! Program::intersection_is_empty(repeats_prog, &lit_program))
+            }
+        }
+    }
+
+    /// Given a list of repetition expressions, compile its program.
+    ///
+    /// If `repeats` == /.*/, we return None. This repetition is special
+    /// because we wrap the literals in dotstars when checking intersection,
+    /// so we need to avoid an infinite recursion.
+    fn compile_repeats_prog(
+        &self,
+        repeats: &[&Expr]
+    ) -> result::Result<Option<Program>, Error> {
+        use syntax::Expr::{Concat};
+
+        if repeats.len() == 1 && self.expr_is_repeated_any(repeats[0]) {
+            return Ok(None);
+        }
+
+        self.copy_config()
+            .compile_one(&Concat(repeats.iter()
+                .map(|x| (**x).clone())
+                .collect())).map(Some)
+    }
+
+    /// A predicate to test if an expression is a repetition of
+    /// AnyChar (/.*/, /.+/, /.*?/, /.+?/).
+    fn expr_is_repeated_any(&self, e: &Expr) -> bool {
+        use syntax::Expr::{Repeat, AnyChar, AnyCharNoNL, AnyByte, AnyByteNoNL};
+        use syntax::Repeater::{ZeroOrMore, OneOrMore};
+
+        match e {
+            &Repeat { e: ref inner, r, greedy: _ }
+                if (**inner == AnyChar || **inner == AnyCharNoNL
+                    || **inner == AnyByte || **inner == AnyByteNoNL)
+                  && (r == ZeroOrMore || r == OneOrMore) => true,
+            _ => false,
+        }
+    }
+
+    /// Emit a literal scan instruction and various window dressing
+    /// depending on the flags below.
+    ///
+    /// `chars` - The literal to scan forward to.
+    /// `start` - If true, drop us off at the start of the literal at
+    ///           the end of the scan (drop us off at the end otherwise).
+    /// `branch` - If true, non-deterministicly branch back to the start
+    ///            after a scan.
+    /// `greedy` - True if the last repeat before the literal is a greedy
+    ///            repetition. Determines the order of the branch gotos.
+    fn sc_literal_scan(
+        &mut self,
+        chars: &Vec<char>,
+        start: bool,
+        branch: bool,
+        greedy: bool, 
+        ) -> Patch
+    {
+        // First, emit the scan instruction.
+        let mut lits = Literals::empty();
+        lits.add(Lit::new(Vec::from(
+                     chars.into_iter().collect::<String>().as_bytes())));
+        let scan = self.sc_push_one(SkipInstHole::ScanLiteral {
+            literal: LiteralSearcher::prefixes(lits),
+            start: start,
+        });
+
+        if branch {
+            // Now non-deterministicly branch back to the start.
+            let Patch { hole: split_hole, entry: split_entry } =
+                self.sc_push_split_patch();
+
+            let split_hole = if greedy {
+                self.sc_fill_split(split_hole, Some(scan.entry), None)
+            } else {
+                self.sc_fill_split(split_hole, None, Some(scan.entry))
+            };
+
+            self.sc_continue(scan, Patch {
+                hole: split_hole,
+                entry: split_entry,
+            })
+        } else {
+            scan
+        }
+    }
+
 
     fn c_alternate(&mut self, exprs: &[Expr]) -> Result {
         debug_assert!(

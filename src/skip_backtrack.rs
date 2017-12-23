@@ -166,6 +166,8 @@ impl<'a, 'r, 's, I: Input> Bounded<'a, 'r, 's, I> {
     /// Start backtracking at the given position in the input, but also look
     /// for literal prefixes.
     fn exec_(&mut self, mut sp: usize) -> bool {
+        trace!("exec_: INPUT.len() = {}", self.input.as_bytes().len());
+
         self.clear();
         // If this is an anchored regex at the beginning of the input, then
         // we're either already done or we only need to try backtracking once.
@@ -234,6 +236,10 @@ impl<'a, 'r, 's, I: Input> Bounded<'a, 'r, 's, I> {
             if self.has_visited(ip, sp) {
                 return false;
             }
+
+            let input = self.input.as_bytes();
+
+            trace!("step: ip={} sp={}", ip, sp);
             match self.prog.skip_insts[ip] {
                 SkipMatch(_) => {
                     return true;
@@ -257,7 +263,7 @@ impl<'a, 'r, 's, I: Input> Bounded<'a, 'r, 's, I> {
                     ip = inst.goto1;
                 }
                 SkipByte(ref inst) => {
-                    if inst.c == self.input.as_bytes()[sp] {
+                    if sp < input.len() && inst.c == input[sp] {
                         ip = inst.goto;
                         sp += 1;
                     } else {
@@ -265,7 +271,7 @@ impl<'a, 'r, 's, I: Input> Bounded<'a, 'r, 's, I> {
                     }
                 }
                 SkipBytes(ref inst) => {
-                    if inst.matches(self.input.as_bytes()[sp]) {
+                    if sp < input.len() && inst.matches(input[sp]) {
                         ip = inst.goto;
                         sp += 1;
                     } else {
@@ -273,7 +279,7 @@ impl<'a, 'r, 's, I: Input> Bounded<'a, 'r, 's, I> {
                     }
                 }
                 SkipSkip(ref inst) => {
-                    if sp < self.input.as_bytes().len() {
+                    if sp < input.len() {
                         ip = inst.goto;
                         sp += inst.skip;
                     } else {
@@ -283,8 +289,7 @@ impl<'a, 'r, 's, I: Input> Bounded<'a, 'r, 's, I> {
                 SkipScanLiteral(ref inst) => {
                     ip = inst.goto;
 
-                    let lit_loc = inst.literal.find(
-                            &self.input.as_bytes()[sp..]);
+                    let lit_loc = inst.literal.find(&input[sp..]);
                     sp += if let Some((lit_start, lit_end)) = lit_loc {
                         if inst.start {
                             lit_start
