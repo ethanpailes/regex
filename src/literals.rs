@@ -71,7 +71,7 @@ impl fmt::Display for Matcher {
             Matcher::SingleBoyerMoore(ref s) =>
                 write!(f, "TBM({})", String::from_utf8_lossy(&s.pattern)),
             Matcher::AC(ref ac) => {
-                let lits = vec![];
+                let mut lits = vec![];
                 for lit in ac.patterns().iter() {
                     lits.push(format!("{}", lit));
                 }
@@ -79,7 +79,7 @@ impl fmt::Display for Matcher {
             }
             Matcher::Teddy128(ref ted) => {
                 // No join in rust-1.12.0 stable :(
-                let s = String::new();
+                let mut s = String::new();
                 let mut first = true;
                 for p in ted.patterns().iter() {
                     if first {

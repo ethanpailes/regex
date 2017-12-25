@@ -77,7 +77,8 @@ pub fn can_exec(insts: &Program) -> bool {
     for inst in insts {
         match *inst {
             Char(_) | Ranges(_) => return false,
-            EmptyLook(_) | Match(_) | Save(_) | Split(_) | Bytes(_) => {}
+            Scan(_) | EmptyLook(_) | Match(_) | Save(_)
+                | Split(_) | Bytes(_) => {}
         }
     }
     true
@@ -934,7 +935,7 @@ impl<'a> Fsm<'a> {
             // Compute the flags immediately preceding the current byte.
             // This means we only care about the "end" or "end line" flags.
             // (The "start" flags are computed immediately proceding the
-            // current byte which is handled below.)
+            // current byte and is handled below.)
             let mut flags = EmptyFlags::default();
             if b.is_eof() {
                 flags.end = true;
@@ -978,7 +979,8 @@ impl<'a> Fsm<'a> {
         for &ip in &*qcur {
             match self.prog[ip as usize] {
                 // These states never happen in a byte-based program.
-                Char(_) | Ranges(_) => unreachable!(),
+                // Scan should never be part of a DFA state.
+                Scan(_) | Char(_) | Ranges(_) => unreachable!(),
                 // These states are handled when following epsilon transitions.
                 Save(_) | Split(_) | EmptyLook(_) => {}
                 Match(_) => {
@@ -1082,14 +1084,18 @@ impl<'a> Fsm<'a> {
         // We need to traverse the NFA to follow epsilon transitions, so avoid
         // recursion with an explicit stack.
         self.cache.stack.push(ip);
-        while let Some(ip) = self.cache.stack.pop() {
+        while let Some(mut ip) = self.cache.stack.pop() {
+            if let Scan(ref inst) = self.prog[ip as usize] {
+                ip = usize_to_u32(inst.goto_fallback);
+            }
+
             // Don't visit states we've already added.
             if q.contains(ip as usize) {
                 continue;
             }
             q.insert(ip as usize);
             match self.prog[ip as usize] {
-                Char(_) | Ranges(_) => unreachable!(),
+                Scan(_) | Char(_) | Ranges(_) => unreachable!(),
                 Match(_) | Bytes(_) => {}
                 EmptyLook(ref inst) => {
                     // Only follow empty assertion states if our flags satisfy
@@ -1215,7 +1221,7 @@ impl<'a> Fsm<'a> {
         for &ip in q {
             let ip = usize_to_u32(ip);
             match self.prog[ip as usize] {
-                Char(_) | Ranges(_) => unreachable!(),
+                Scan(_) | Char(_) | Ranges(_) => unreachable!(),
                 Save(_) | Split(_) => {}
                 Bytes(_) => push_inst_ptr(&mut insts, &mut prev, ip),
                 EmptyLook(_) => {

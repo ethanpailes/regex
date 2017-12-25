@@ -277,6 +277,24 @@ impl<'a, 'm, 'r, 's, I: Input> Bounded<'a, 'm, 'r, 's, I> {
                     }
                     return false;
                 }
+                Scan(ref inst) => {
+                    ip = inst.goto;
+
+                    let lit_loc =
+                        inst.literal.find(&self.input.as_bytes()[at.pos()..]);
+                    let delta = if let Some((lit_start, lit_end)) = lit_loc {
+                        if inst.start {
+                            lit_start
+                        } else {
+                            lit_end
+                        }
+                    } else {
+                        // thread dies if we can't find the literal.
+                        return false;
+                    };
+
+                    at = self.input.at(at.pos() + delta);
+                }
             }
         }
     }
