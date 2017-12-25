@@ -64,8 +64,33 @@ impl fmt::Display for Matcher {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
             Matcher::Empty => write!(f, "Empty"),
-            Matcher::Bytes(ref sbs) => {
-                write!(f, "{:?}", sbs.dense)
+            Matcher::Bytes(ref b) =>
+                write!(f, "Bytes({:?})", b.dense),
+            Matcher::SingleMemchr(ref s) =>
+                write!(f, "Memchr({})", String::from_utf8_lossy(&s.pat)),
+            Matcher::SingleBoyerMoore(ref s) =>
+                write!(f, "TBM({})", String::from_utf8_lossy(&s.pattern)),
+            Matcher::AC(ref ac) => {
+                let lits = vec![];
+                for lit in ac.patterns().iter() {
+                    lits.push(format!("{}", lit));
+                }
+                write!(f, "AC({})", lits.join("|"))
+            }
+            Matcher::Teddy128(ref ted) => {
+                // No join in rust-1.12.0 stable :(
+                let s = String::new();
+                let mut first = true;
+                for p in ted.patterns().iter() {
+                    if first {
+                        first = false;
+                    } else {
+                        s.push_str("|");
+                    }
+                    s.push_str(&String::from_utf8_lossy(p));
+                }
+
+                write!(f, "Teddy({})", s)
             }
         }
     }
@@ -259,12 +284,17 @@ impl Matcher {
     #[inline(always)] // reduces constant overhead
     pub fn find(&self, haystack: &[u8]) -> Option<(usize, usize)> {
         match *self {
-            Empty => Some((0, 0)),
-            Bytes(ref sset) => sset.find(haystack).map(|i| (i, i + 1)),
-            SingleMemchr(ref s) => s.find(haystack).map(|i| (i, i + s.len())),
-            SingleBoyerMoore(ref s) => s.find(haystack).map(|i| (i, i + s.len())),
-            AC(ref aut) => aut.find(haystack).next().map(|m| (m.start, m.end)),
-            Teddy128(ref ted) => ted.find(haystack).map(|m| (m.start, m.end)),
+            Matcher::Empty => Some((0, 0)),
+            Matcher::Bytes(ref sset) =>
+                sset.find(haystack).map(|i| (i, i + 1)),
+            Matcher::SingleMemchr(ref s) =>
+                s.find(haystack).map(|i| (i, i + s.len())),
+            Matcher::SingleBoyerMoore(ref s) =>
+                s.find(haystack).map(|i| (i, i + s.len())),
+            Matcher::AC(ref aut) =>
+                aut.find(haystack).next().map(|m| (m.start, m.end)),
+            Matcher::Teddy128(ref ted) =>
+                ted.find(haystack).map(|m| (m.start, m.end)),
         }
     }
 
@@ -325,7 +355,7 @@ impl<'a> Iterator for LiteralIter<'a> {
 }
 
 #[derive(Clone, Debug)]
-struct SingleByteSet {
+pub struct SingleByteSet {
     sparse: Vec<bool>,
     dense: Vec<u8>,
     complete: bool,

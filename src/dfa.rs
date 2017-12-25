@@ -699,7 +699,7 @@ impl<'a> Fsm<'a> {
                 }
             } else if next_si & STATE_START > 0 {
                 // A start state isn't in the common case because we may
-                // what to do quick prefix scanning. If the program doesn't
+                // want to do quick prefix scanning. If the program doesn't
                 // have a detected prefix, then start states are actually
                 // considered common and this case is never reached.
                 debug_assert!(self.has_prefix());
@@ -934,7 +934,7 @@ impl<'a> Fsm<'a> {
             // Compute the flags immediately preceding the current byte.
             // This means we only care about the "end" or "end line" flags.
             // (The "start" flags are computed immediately proceding the
-            // current byte and is handled below.)
+            // current byte which is handled below.)
             let mut flags = EmptyFlags::default();
             if b.is_eof() {
                 flags.end = true;

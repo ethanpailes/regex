@@ -47,6 +47,12 @@ pub struct Lit {
     cut: bool,
 }
 
+impl fmt::Display for Lit {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", String::from_utf8_lossy(&self.v))
+    }
+}
+
 impl Literals {
     /// Returns a new empty set of literals using default limits.
     pub fn empty() -> Literals {
