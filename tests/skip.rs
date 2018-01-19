@@ -77,6 +77,12 @@ fn skip_kleene_star_twoc_lazy() {
 }
 
 #[test]
+fn skip_dotstar_compile_loop_bug() {
+    regex!(".*c");
+}
+
+
+#[test]
 fn skip_capture_repeat() {
     let re = regex!("(?:a(b))*baz");
     let caps = re.captures(b"ababbaz").unwrap();

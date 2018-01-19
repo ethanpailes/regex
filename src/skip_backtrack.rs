@@ -166,7 +166,10 @@ impl<'a, 'r, 's, I: Input> Bounded<'a, 'r, 's, I> {
     /// Start backtracking at the given position in the input, but also look
     /// for literal prefixes.
     fn exec_(&mut self, mut sp: usize) -> bool {
-        trace!("exec_: INPUT.len() = {}", self.input.as_bytes().len());
+        use std::str;
+        trace!("exec_: INPUT.len() = {}, INPUT=\"{}\"",
+                self.input.as_bytes().len(),
+                str::from_utf8(self.input.as_bytes()).unwrap());
 
         self.clear();
         // If this is an anchored regex at the beginning of the input, then

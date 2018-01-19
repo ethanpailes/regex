@@ -1,8 +1,6 @@
 
 extern crate regex;
 
-// use regex::Regex;
-
 macro_rules! regex_new {
     ($re:expr) => {{
         use regex::internal::ExecBuilder;

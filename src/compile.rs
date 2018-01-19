@@ -14,7 +14,7 @@ use std::result;
 use std::sync::Arc;
 
 // Flip to true for debugging
-const TRACE: bool = true;
+const TRACE: bool = false;
 macro_rules! trace {
     ($($tts:tt)*) => {
         if TRACE {
@@ -60,6 +60,11 @@ pub struct Compiler {
     utf8_seqs: Option<Utf8Sequences>,
     byte_classes: ByteClassSet,
     has_skip_insts: bool,
+
+    /// Mutable compiler state. Should never be touched
+    /// directly, but should only be manipulated with the
+    /// branch_type_call_* methods.
+    branch_type: BranchType,
 }
 
 impl Compiler {
@@ -78,6 +83,7 @@ impl Compiler {
             utf8_seqs: Some(Utf8Sequences::new('\x00', '\x00')),
             byte_classes: ByteClassSet::new(),
             has_skip_insts: false,
+            branch_type: BranchType::NoBranch,
         }
     }
 
@@ -94,7 +100,8 @@ impl Compiler {
             suffix_cache: SuffixCache::new(1000),
             utf8_seqs: Some(Utf8Sequences::new('\x00', '\x00')),
             byte_classes: ByteClassSet::new(),
-            has_skip_insts: self.has_skip_insts
+            has_skip_insts: self.has_skip_insts,
+            branch_type: self.branch_type,
         };
         c
     }
@@ -173,11 +180,13 @@ impl Compiler {
     ) -> result::Result<Program, Error> {
         debug_assert!(exprs.len() >= 1);
         self.num_exprs = exprs.len();
-        if exprs.len() == 1 {
+        let res = if exprs.len() == 1 {
             self.compile_one(&exprs[0])
         } else {
             self.compile_many(exprs)
-        }
+        };
+        trace!("::compile finished");
+        res
     }
 
     fn compile_one(mut self, expr: &Expr) -> result::Result<Program, Error> {
@@ -208,11 +217,13 @@ impl Compiler {
             try!(self.sc_compile_one(expr));
         }
 
-        self.compile_finish()
+        let res = self.compile_finish();
+        trace!("::compile_one finished");
+        res
     }
 
     fn sc_compile_one(&mut self, expr: &Expr) -> result::Result<(), Error> {
-        trace!("sc_compile_one: {:?}", expr);
+        trace!("::sc_compile_one {:?}", expr);
 
         // if required, start the party with a dotstar
         let mut sc_dotstar_patch = Patch { hole: Hole::None, entry: 0 };
@@ -235,6 +246,7 @@ impl Compiler {
         let sc_next = self.sc_push_compiled(SkipInst::SkipMatch(0));
         self.sc_continue(sc_patch, sc_next);
 
+        trace!("::sc_compile_one finished");
         Ok(())
     }
 
@@ -394,6 +406,8 @@ impl Compiler {
     fn sc(&mut self, expr: &Expr) -> Result {
         use syntax::Expr::*;
 
+        trace!("::sc expr={:?}", expr);
+
         try!(self.check_size());
         match *expr {
             Empty => Ok(Patch { hole: Hole::None, entry: self.insts.len() }),
@@ -456,14 +470,20 @@ impl Compiler {
     /// a branch context.
     fn sc_branch(&mut self, expr: &Expr) -> Result {
         use syntax::Expr::*;
+        trace!("::sc_branch expr={:?}", expr);
+        // TODO: handle intersection.
 
         try!(self.check_size());
         match *expr {
             Literal { ref chars, casei } =>
                 self.sc_literal(chars, casei, true),
+            Concat(ref es) => {
+                let p = try!(self.sc_branch(&es[0]));
+                let next = try!(self.sc(&Concat(es[1..].to_vec())));
+                Ok(self.sc_continue(p, next))
+            }
             ref e => self.sc(e),
         }
-
     }
 
     fn c_capture(&mut self, first_slot: usize, expr: &Expr) -> Result {
@@ -486,6 +506,8 @@ impl Compiler {
     fn sc_capture<F>(&mut self, first_slot: usize, compile_inner: F) -> Result 
         where F: FnOnce(&mut Self) -> Result
     {
+        trace!("::sc_capture first_slot={}", first_slot);
+
         if self.num_exprs > 1 || self.compiled.is_dfa {
             compile_inner(self)
         } else {
@@ -521,6 +543,8 @@ impl Compiler {
 
     /// compile .*? onto the Skip Regex
     fn sc_dotstar(&mut self) -> Result {
+        trace!("::sc_dotstar");
+
         Ok(if !self.compiled.only_utf8() {
             try!(self.sc(&Expr::Repeat {
                 e: Box::new(Expr::AnyByte),
@@ -562,8 +586,8 @@ impl Compiler {
         _casei: bool,
         branch: bool // are we in branch position?
     ) -> Result {
+        trace!("::sc_literal chars={:?} branch={}", chars, branch);
         // TODO(ethan):casei does not support case insensitivity
-        use ::std::ascii::AsciiExt;
 
         // For now we just support ascii
         if ! chars.into_iter().all(|c| c.is_ascii()) {
@@ -633,8 +657,8 @@ impl Compiler {
     }
 
     fn sc_class(&mut self, ranges: &[ClassRange]) -> Result {
+        trace!("::sc_class {:?}", ranges);
         assert!(!ranges.is_empty());
-        use ::std::ascii::AsciiExt;
 
         let ranges: Vec<ByteRange> = try!(ranges.iter().map(|r| {
             if !(r.start.is_ascii() && r.end.is_ascii()) {
@@ -708,6 +732,7 @@ impl Compiler {
     }
 
     fn sc_class_bytes(&mut self, ranges: &[ByteRange]) -> Result {
+        trace!("::sc_class_bytes {:?}", ranges);
         debug_assert!(!ranges.is_empty());
 
         if ranges.len() == 1 && ranges[0].start == ranges[0].end {
@@ -737,6 +762,8 @@ impl Compiler {
             });
         }
 
+        trace!("::sc_class_bytes wired together ranges");
+
         // the last expression does not get a branch
         let last_r = &ranges[ranges.len() - 1];
         let next = self.sc_push_one(SkipInstHole::Bytes {
@@ -745,6 +772,8 @@ impl Compiler {
         });
         p = self.sc_continue(p, next);
         holes.push(p.hole);
+
+        trace!("::sc_class_bytes finished last range");
 
         Ok(Patch { hole: Hole::Many(holes), entry: p.entry })
     }
@@ -774,6 +803,7 @@ impl Compiler {
 
     fn sc_concat<'a, I>(&mut self, exprs: I) -> Result
         where I: IntoIterator<Item=&'a Expr> {
+        trace!("::sc_concat");
         use syntax::Expr::*;
 
         // we don't have to do any skip fusion here because the
@@ -834,6 +864,7 @@ impl Compiler {
         repeats: &[&Expr], // TODO(ethan): perform the containment optimization
         term: &Expr
     ) -> Result {
+        trace!("::sc_terminated_repeats");
         use std::ops::Deref;
         use syntax::Expr::*;
 
@@ -846,7 +877,7 @@ impl Compiler {
 
         let all_dotstars = repeats.iter().all(|e| self.expr_is_repeated_any(e));
 
-        trace!("all_dotstars={}", all_dotstars);
+        trace!("::sc_terminated_repeats all_dotstars={}", all_dotstars);
 
         let mut p = Patch { hole: Hole::None, entry: self.sc_next() };
 
@@ -856,6 +887,7 @@ impl Compiler {
         let can_scan = can_scan && match term {
             // TODO(ethan): case sensativity
             &Literal { ref chars, casei: _ } => {
+                trace!("::sc_terminated_repeats literal branch");
                 if !all_dotstars
                     && try!(self.lit_in_repeats(&repeats_program, &term)) {
                     false
@@ -867,8 +899,10 @@ impl Compiler {
                 }
             }
             &Group { ref e, i: Some(idx), ref name } => {
+                trace!("::sc_terminated_repeats group branch");
                 match e.deref() {
                     &Literal { ref chars, casei } => {
+                        trace!("group-literal branch");
                         if !all_dotstars
                             && try!(self.lit_in_repeats(&repeats_program, &term)) {
                             false
@@ -908,13 +942,15 @@ impl Compiler {
             _ => false
         };
 
+        trace!("::sc_terminated_repeats compiled scan ({})", can_scan);
+
         if !can_scan {
             // a list of just repetitions (no terminator) will terminate the
             // mutal recursion.
             let next = try!(self.sc_concat(repeats.into_iter().map(|x| *x)));
             p = self.sc_continue(p, next);
 
-            // The expression which terminates a branch instruction is
+            // The expression which terminates a repeat instruction is
             // in branch position.
             let next = try!(self.sc_branch(term));
             p = self.sc_continue(p, next);
@@ -928,6 +964,7 @@ impl Compiler {
         repeats: &Option<Program>,
         lit: &Expr
     ) -> result::Result<bool, Error> {
+        trace!("::lit_in_repeats");
         use syntax::Expr::{Concat, AnyChar, Repeat};
 
         match repeats {
@@ -947,7 +984,11 @@ impl Compiler {
                          (*lit).clone(),
                          dotstar])));
 
-                Ok(! Program::intersection_is_empty(repeats_prog, &lit_program))
+                trace!("::lit_in_repeats set up for check");
+                let res = !Program::intersection_is_empty(
+                            repeats_prog, &lit_program);
+                trace!("::lit_in_repeats {}", res);
+                Ok(res)
             }
         }
     }
@@ -1006,6 +1047,7 @@ impl Compiler {
         greedy: bool, 
         ) -> Patch
     {
+        trace!("::sc_literal_scan");
         // First, emit the scan instruction.
         let mut lits = Literals::empty();
         lits.add(Lit::new(Vec::from(
@@ -1071,6 +1113,7 @@ impl Compiler {
     /// The last expression is handled a little differently, because
     /// we don't want to provide a split path around it.
     fn sc_alternate(&mut self, exprs: &[Expr]) -> Result {
+        trace!("::sc_alternate");
         debug_assert!(
             exprs.len() >= 2, "alternates must have at least 2 exprs");
 
@@ -1126,6 +1169,7 @@ impl Compiler {
         kind: Repeater,
         greedy: bool,
     ) -> Result {
+        trace!("::sc_repeat");
         match kind {
             Repeater::ZeroOrOne => self.sc_repeat_zero_or_one(expr, greedy),
             Repeater::ZeroOrMore => self.sc_repeat_zero_or_more(expr, greedy),
@@ -1170,6 +1214,7 @@ impl Compiler {
         expr: &Expr,
         greedy: bool,
     ) -> Result {
+        trace!("::sc_repeat_zero_or_one");
         let Patch { hole: split_hole, entry: split_entry } =
             self.sc_push_split_patch();
         let inner = try!(self.sc_branch(expr));
@@ -1217,6 +1262,7 @@ impl Compiler {
         expr: &Expr,
         greedy: bool,
     ) -> Result {
+        trace!("::sc_repeat_zero_or_more");
         let Patch { hole: split_hole, entry: split_entry} =
             self.sc_push_split_patch();
         let inner = try!(self.sc_branch(expr));
@@ -1265,6 +1311,7 @@ impl Compiler {
         expr: &Expr,
         greedy: bool,
     ) -> Result {
+        trace!("::sc_repeat_one_or_more");
         let inner = try!(self.sc_branch(expr));
         let Patch { hole: split_hole, entry: split_entry } =
             self.sc_push_split_patch();
@@ -1304,6 +1351,7 @@ impl Compiler {
         greedy: bool,
         min: u32,
     ) -> Result {
+        trace!("::sc_repeat_range_min_or_more");
         let p = try!(self.sc_concat(iter::repeat(expr).take(u32_to_usize(min))));
 
         let next = try!(self.sc_repeat_zero_or_more(expr, greedy));
@@ -1377,6 +1425,7 @@ impl Compiler {
         min: u32,
         max: u32,
     ) -> Result {
+        trace!("::sc_repeat_range");
         let (min, max) = (u32_to_usize(min), u32_to_usize(max));
         let mut p = try!(self.sc_concat(iter::repeat(expr).take(min)));
 
@@ -1423,8 +1472,6 @@ impl Compiler {
     fn sc_next(&self) -> InstPtr {
         self.skip_insts.len()
     }
-
-    // sc_fill_to_next(h) is self.sc_fill(h, self.sc_next())
 
     fn fill(&mut self, hole: Hole, goto: InstPtr) {
         match hole {
@@ -1577,6 +1624,36 @@ impl Compiler {
         Patch { entry: split_entry, hole: Hole::One(split_entry) }
     }
 
+    fn branch_type_call_no_branch<A, F>(&mut self, f: F) -> A
+        where F: FnOnce(&mut Self) -> A
+    {
+        let old_branch_type = self.branch_type;
+        self.branch_type = BranchType::NoBranch;
+        let ret = f(self);
+        self.branch_type = old_branch_type;
+        ret
+    }
+
+    fn branch_type_call_intersecting<A, F>(&mut self, f: F) -> A
+        where F: FnOnce(&mut Self) -> A
+    {
+        let old_branch_type = self.branch_type;
+        self.branch_type = BranchType::Intersecting;
+        let ret = f(self);
+        self.branch_type = old_branch_type;
+        ret
+    }
+
+    fn branch_type_call_non_intersecting<A, F>(&mut self, f: F) -> A
+        where F: FnOnce(&mut Self) -> A
+    {
+        let old_branch_type = self.branch_type;
+        self.branch_type = BranchType::NonIntersecting;
+        let ret = f(self);
+        self.branch_type = old_branch_type;
+        ret
+    }
+
     fn check_size(&self) -> result::Result<(), Error> {
         use std::mem::size_of;
 
@@ -1596,6 +1673,40 @@ enum Hole {
     None,
     One(InstPtr),
     Many(Vec<Hole>),
+}
+
+/// A flag to indicate the branch context of the current compilation.
+#[derive(Copy, Clone, Debug)]
+enum BranchType {
+    /// Compile the expression as if it is not part of a branch
+    /// at all. This is the default.
+    NoBranch,
+
+    /// Compile the expression as if it is part of a non-intersecting
+    /// branch pattern such as `/axxx|bxx/`. That is, the first char must
+    /// be checked so that the proper thread dies, but the skips can
+    /// be used afterwards. So we would compile the first branch in
+    /// the given example to
+    ///
+    /// ```text
+    /// char 'a'
+    /// skip 3
+    /// ```
+    NonIntersecting,
+
+    /// Compile a branch with a trigger set that intersects with
+    /// the trigger sets of other branches. The trigger set can
+    /// be thought of as the 1-preview of the regex. For example
+    /// `/axxx|axx/` is a regex with an intersecting branch.
+    /// The first branch would have to be compiled as:
+    ///
+    /// ```text
+    /// char 'a'
+    /// char 'x'
+    /// char 'x'
+    /// char 'x'
+    /// ```
+    Intersecting,
 }
 
 #[derive(Clone, Debug)]

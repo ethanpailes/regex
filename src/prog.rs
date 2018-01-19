@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::cmp::Ordering;
 use std::fmt;
 use std::ops::Deref;
@@ -145,7 +145,6 @@ impl Program {
     #[allow(unreachable_code, unused_variables)]
     pub fn intersection_is_empty(lhs: &Self, rhs: &Self) -> bool {
         use self::Inst::*;
-        use std::collections::HashSet;
 
         if TRACE {
             trace!("");
@@ -171,6 +170,7 @@ impl Program {
         };
 
         let is_match = |st: &IntersectState| {
+            trace!("Program::intersection_is_empty::is_match");
             match lhs.insts[st.st1] {
                 Match(_) => {
                     match rhs.insts[st.st2] {
@@ -190,6 +190,7 @@ impl Program {
         let mut seen = HashSet::new();
 
         while let Some(st) = stack.pop() {
+            trace!("loop on state (st1={}, st2={})", st.st1, st.st2);
             if seen.contains(&st) {
                 continue;
             }
@@ -202,6 +203,7 @@ impl Program {
             }
 
             for c in inter_children(st) {
+                trace!("pushing kid (st1={}, st2={})", c.st1, c.st2);
                 stack.push(c);
             }
         }
@@ -343,19 +345,24 @@ impl<'a> IntoIterator for &'a Program {
     fn into_iter(self) -> Self::IntoIter { self.iter() }
 }
 
+/// InstChildren implements a resumable DFS on program states.
 #[derive(Clone, Debug)]
 pub struct InstChildren<'p> {
-    // a stack recording our position in the DFS
+    /// A stack recording our position in the DFS.
     branches: Vec<usize>,
-    // the instructions we are iterating over
+    /// The set of states that we have returned.
+    seen: HashSet<usize>,
+    /// The instructions we are iterating over.
     insts: &'p [Inst],
 }
 
 impl<'p> InstChildren<'p> {
     fn new(insts: &'p [Inst], start: usize) -> Self {
+        trace!("InstChildren::new");
         let mut c = InstChildren {
             branches: vec![],
-            insts: insts
+            seen: HashSet::new(),
+            insts: insts,
         };
         c.find_next(start);
         c
@@ -364,11 +371,16 @@ impl<'p> InstChildren<'p> {
     /// Given a start point, follow goto pointers until we
     /// reach a leaf value, leaving a trail of breadcrumbs
     /// in `branches` to handle split points.
+    ///
+    /// INVARIANT: `from` has already been returned from the iterator
+    ///             or is the origin state.
     fn find_next(&mut self, from: usize) {
+        trace!("InstChildren::find_next from={} branches={:?}",
+                from, self.branches);
         use self::Inst::*;
 
         // don't start at `from` so that we can actually make it
-        // out of input consuming states states
+        // out of input consuming states
         let mut i = match self.insts[from] {
             Save(ref inst) => inst.goto,
             Split(_) => from,
@@ -380,6 +392,8 @@ impl<'p> InstChildren<'p> {
         };
 
         loop {
+            trace!("InstChildren::find_next loop inst={} branches={:?}",
+                        i, self.branches);
             match self.insts[i] {
                 Save(ref inst) => i = inst.goto,
                 Split(ref inst) => {
@@ -387,8 +401,17 @@ impl<'p> InstChildren<'p> {
                     i = inst.goto1;
                 }
                 _ => { // input consuming state
-                    self.branches.push(i);
-                    return;
+                    if self.seen.contains(&i) {
+                        self.branches.pop().map(|resume| {
+                            trace!("InstChildren::find_next contains resume={}",
+                                    resume);
+                            i = resume;
+                        });
+                    } else {
+                        self.branches.push(i);
+                        self.seen.insert(i);
+                        return;
+                    }
                 }
             }
         }
@@ -404,6 +427,8 @@ impl<'p> Iterator for InstChildren<'p> {
     type Item = usize;
 
     fn next(&mut self) -> Option<Self::Item> {
+        trace!("InstChildren::next branches={:?} seen={:?}",
+                    self.branches, self.seen);
         let result = self.branches.pop();
         self.branches.pop().map(|from| self.find_next(from));
         result
@@ -429,6 +454,8 @@ struct IntersectInstChildren<'p> {
     i2: InstChildren<'p>,
     i2_current: InstChildren<'p>,
     insts2: &'p [Inst],
+
+    ebrake: usize,
 }
 
 impl<'p> IntersectInstChildren<'p> {
@@ -438,6 +465,7 @@ impl<'p> IntersectInstChildren<'p> {
         insts2: &'p [Inst],
         st2: usize
     ) -> Self {
+        trace!("IntersectInstChildren::new st1={} st2={}", st1, st2);
         let mut i1 = InstChildren::new(insts1, st1);
         let i2 = InstChildren::new(insts2, st2);
         let cur = i1.next();
@@ -448,6 +476,7 @@ impl<'p> IntersectInstChildren<'p> {
             i2: i2.clone(),
             i2_current: i2,
             insts2,
+            ebrake: 0,
         }
     }
 }
@@ -466,8 +495,14 @@ impl<'p> Iterator for IntersectInstChildren<'p> {
 
     fn next(&mut self) -> Option<Self::Item> {
         trace!("IntersectInstChildren::next");
+        self.ebrake = self.ebrake + 1;
+        if self.ebrake >= 8 {
+            unreachable!("HALT");
+        }
+
         let st2 = match self.i2_current.next() {
             None => { // time to shuffle i1
+                trace!("IntersectInstChildren::next time to reset i1");
                 self.i1_current = self.i1.next();
                 self.i2_current = self.i2.clone();
 
@@ -480,6 +515,8 @@ impl<'p> Iterator for IntersectInstChildren<'p> {
 
         // If we run off the end of the first iterator, we are done.
         let st1 = otry!(self.i1_current);
+
+        trace!("IntersectInstChildren::next st1={} st2={}", st1, st2);
         
         // We want to gaurd against returning a state which can't
         // accept any charicter. For example consider the state:
@@ -491,11 +528,13 @@ impl<'p> Iterator for IntersectInstChildren<'p> {
         // Here if the input charicter is an 'a' then thread 2 will die,
         // but if the input charicter is a 'b' then thread 1 will die.
         if Inst::has_intersecting_char(&self.insts1[st1], &self.insts2[st2]) {
+            trace!("IntersectInstChildren::next terminal compound state");
             Some(IntersectState {
                 st1: st1,
                 st2: st2,
             })
         } else {
+            trace!("IntersectInstChildren::next dead-end compound state");
             self.next()
         }
 

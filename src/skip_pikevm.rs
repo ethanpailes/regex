@@ -118,12 +118,13 @@ impl RunQueue {
     ///
     /// Worst case O(n) in the size of the ring. (Basically O(1)).
     fn pop(&mut self) -> Option<(usize, usize)> {
-        if self.next_thread >= self._cq().set.len() {
+        let next_thread = self.next_thread;
+        if next_thread >= self._cq().set.len() {
             return None;
         }
 
-        let ip = self._cq().set[self.next_thread];
-        self.next_thread = self.next_thread + 1;
+        let ip = self._cq().set[next_thread];
+        self.next_thread = next_thread + 1;
         Some((ip, self.current_string_offset))
     }
 
