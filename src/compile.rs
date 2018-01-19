@@ -63,7 +63,7 @@ pub struct Compiler {
 
     /// Mutable compiler state. Should never be touched
     /// directly, but should only be manipulated with the
-    /// branch_type_call_* methods.
+    /// sc_branch_type_call method.
     branch_type: BranchType,
 }
 
@@ -412,7 +412,7 @@ impl Compiler {
         match *expr {
             Empty => Ok(Patch { hole: Hole::None, entry: self.insts.len() }),
             Literal { ref chars, casei } =>
-                self.sc_literal(chars, casei, false),
+                self.sc_literal(chars, casei),
             Repeat { ref e, r, greedy } => self.sc_repeat(e, r, greedy),
             AnyChar => self.sc_class(&[ClassRange {
                 // For now we just support ascii. In the event that we
@@ -460,29 +460,6 @@ impl Compiler {
             }
             Alternate(ref es) => self.sc_alternate(&**es),
             ref e => unreachable!("Unimplimented instruction: {:?}", e),
-        }
-    }
-
-    /// Compile an expression in the context of a branch.
-    /// For example, given the expression /aaaaa(?:bb|cc|dd)/,
-    /// aaaaa would be compiled by the ordinary `sc` method,
-    /// while `bb`, `cc`, and `dd` would be compiled in
-    /// a branch context.
-    fn sc_branch(&mut self, expr: &Expr) -> Result {
-        use syntax::Expr::*;
-        trace!("::sc_branch expr={:?}", expr);
-        // TODO: handle intersection.
-
-        try!(self.check_size());
-        match *expr {
-            Literal { ref chars, casei } =>
-                self.sc_literal(chars, casei, true),
-            Concat(ref es) => {
-                let p = try!(self.sc_branch(&es[0]));
-                let next = try!(self.sc(&Concat(es[1..].to_vec())));
-                Ok(self.sc_continue(p, next))
-            }
-            ref e => self.sc(e),
         }
     }
 
@@ -584,9 +561,8 @@ impl Compiler {
         &mut self,
         chars: &[char],
         _casei: bool,
-        branch: bool // are we in branch position?
     ) -> Result {
-        trace!("::sc_literal chars={:?} branch={}", chars, branch);
+        trace!("::sc_literal chars={:?}", chars);
         // TODO(ethan):casei does not support case insensitivity
 
         // For now we just support ascii
@@ -597,31 +573,47 @@ impl Compiler {
 
         let max_skip = RUN_QUEUE_RING_SIZE - 1;
 
-        let mut skip_start = 0;
         let mut p = Patch { hole: Hole::None, entry: self.sc_next() };
 
-        if branch {
-            let mut b = [0; 1];
-            chars[0].encode_utf8(&mut b);
+        if self.branch_type == BranchType::Intersecting {
+            // If we are in an intersecting branch situation, no
+            // skips are emitted.
+            for c in chars {
+                let mut b = [0; 1];
+                c.encode_utf8(&mut b);
+                let next = self.sc_push_one(SkipInstHole::Byte {
+                    c: b[0]
+                });
+                p = self.sc_continue(p, next);
+            }
+        } else {
+            // If we are in a NoBranch or NonIntersecting situation,
+            // literals compile down to a skip.
+            let mut skip_start = 0;
 
-            let next = self.sc_push_one(SkipInstHole::Byte {
-                c: b[0]
-            });
-            p = self.sc_continue(p, next);
-            skip_start += 1;
-        }
+            if self.branch_type == BranchType::NonIntersecting {
+                let mut b = [0; 1];
+                chars[0].encode_utf8(&mut b);
 
-        while skip_start < chars.len() {
-            let next = self.sc_push_one(SkipInstHole::Skip {
-                skip: if chars.len() - skip_start > max_skip {
-                          max_skip
-                      } else {
-                          chars.len() - skip_start
-                      }
-            });
-            p = self.sc_continue(p, next);
+                let next = self.sc_push_one(SkipInstHole::Byte {
+                    c: b[0]
+                });
+                p = self.sc_continue(p, next);
+                skip_start += 1;
+            }
 
-            skip_start += max_skip;
+            while skip_start < chars.len() {
+                let next = self.sc_push_one(SkipInstHole::Skip {
+                    skip: if chars.len() - skip_start > max_skip {
+                              max_skip
+                          } else {
+                              chars.len() - skip_start
+                          }
+                });
+                p = self.sc_continue(p, next);
+
+                skip_start += max_skip;
+            }
         }
 
         Ok(p)
@@ -902,7 +894,7 @@ impl Compiler {
                 trace!("::sc_terminated_repeats group branch");
                 match e.deref() {
                     &Literal { ref chars, casei } => {
-                        trace!("group-literal branch");
+                        trace!("::sc_terminated_repeats group-literal branch");
                         if !all_dotstars
                             && try!(self.lit_in_repeats(&repeats_program, &term)) {
                             false
@@ -927,7 +919,8 @@ impl Compiler {
                             let next = try!(self.sc_capture(2 * idx, |c| {
                                 // We can never be in branch position here.
                                 // We already found the literal.
-                                c.sc_literal(chars, casei, false)
+                                c.sc_branch_type_call(BranchType::NoBranch,
+                                    |comp| comp.sc_literal(chars, casei))
                             }));
                             p = self.sc_continue(p, next);
 
@@ -952,7 +945,9 @@ impl Compiler {
 
             // The expression which terminates a repeat instruction is
             // in branch position.
-            let next = try!(self.sc_branch(term));
+            let next = try!(self.sc_branch_type_call(
+                                BranchType::NonIntersecting,
+                                |comp| comp.sc(term)));
             p = self.sc_continue(p, next);
         }
 
@@ -1124,7 +1119,9 @@ impl Compiler {
             let Patch { hole: split_hole, entry: split_entry } =
                     self.sc_push_split_patch();
 
-            let inner = try!(self.sc_branch(e));
+            let inner = try!(self.sc_branch_type_call(
+                                BranchType::NonIntersecting,
+                                |comp| comp.sc(e)));
             let half_split =
                 self.sc_fill_split(split_hole, Some(inner.entry), None);
             holes.push(inner.hole);
@@ -1217,7 +1214,10 @@ impl Compiler {
         trace!("::sc_repeat_zero_or_one");
         let Patch { hole: split_hole, entry: split_entry } =
             self.sc_push_split_patch();
-        let inner = try!(self.sc_branch(expr));
+        let inner = try!(self.sc_branch_type_call(
+                              BranchType::NonIntersecting,
+                              |comp| comp.sc(expr)));
+
 
         let split_hole = if greedy {
             self.sc_fill_split(split_hole, Some(inner.entry), None)
@@ -1265,7 +1265,9 @@ impl Compiler {
         trace!("::sc_repeat_zero_or_more");
         let Patch { hole: split_hole, entry: split_entry} =
             self.sc_push_split_patch();
-        let inner = try!(self.sc_branch(expr));
+        let inner = try!(self.sc_branch_type_call(
+                              BranchType::NonIntersecting,
+                              |comp| comp.sc(expr)));
 
         // establish the loopback epsilon transition
         self.sc_fill(inner.hole, split_entry);
@@ -1312,7 +1314,9 @@ impl Compiler {
         greedy: bool,
     ) -> Result {
         trace!("::sc_repeat_one_or_more");
-        let inner = try!(self.sc_branch(expr));
+        let inner = try!(self.sc_branch_type_call(
+                              BranchType::NonIntersecting,
+                              |comp| comp.sc(expr)));
         let Patch { hole: split_hole, entry: split_entry } =
             self.sc_push_split_patch();
 
@@ -1436,7 +1440,9 @@ impl Compiler {
         let mut holes = vec![];
         for _ in min..max {
             let split = self.sc_push_split_patch();
-            let expr_next = try!(self.sc_branch(expr));
+            let expr_next = try!(self.sc_branch_type_call(
+                                    BranchType::NonIntersecting,
+                                    |comp| comp.sc(expr)));
             if greedy {
                 holes.push(self.sc_fill_split(
                         split.hole, Some(expr_next.entry), None));
@@ -1624,31 +1630,11 @@ impl Compiler {
         Patch { entry: split_entry, hole: Hole::One(split_entry) }
     }
 
-    fn branch_type_call_no_branch<A, F>(&mut self, f: F) -> A
+    fn sc_branch_type_call<A, F>(&mut self, bt: BranchType, f: F) -> A
         where F: FnOnce(&mut Self) -> A
     {
         let old_branch_type = self.branch_type;
-        self.branch_type = BranchType::NoBranch;
-        let ret = f(self);
-        self.branch_type = old_branch_type;
-        ret
-    }
-
-    fn branch_type_call_intersecting<A, F>(&mut self, f: F) -> A
-        where F: FnOnce(&mut Self) -> A
-    {
-        let old_branch_type = self.branch_type;
-        self.branch_type = BranchType::Intersecting;
-        let ret = f(self);
-        self.branch_type = old_branch_type;
-        ret
-    }
-
-    fn branch_type_call_non_intersecting<A, F>(&mut self, f: F) -> A
-        where F: FnOnce(&mut Self) -> A
-    {
-        let old_branch_type = self.branch_type;
-        self.branch_type = BranchType::NonIntersecting;
+        self.branch_type = bt;
         let ret = f(self);
         self.branch_type = old_branch_type;
         ret
@@ -1676,7 +1662,7 @@ enum Hole {
 }
 
 /// A flag to indicate the branch context of the current compilation.
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum BranchType {
     /// Compile the expression as if it is not part of a branch
     /// at all. This is the default.
