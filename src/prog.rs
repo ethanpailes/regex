@@ -136,13 +136,12 @@ impl Program {
         InstChildren::new(self.insts.as_slice(), pc)
     }
 
-    /// Decides the question L(self) `intersect` L(other) == emptyset
+    /// Decides the question L(self) `intersect` L(other) == emptyset.
     ///
     /// This question is key to deciding when it is ligitimate to
     /// perform the LiteralScan optimization.
     ///
     /// We just do DFS over the intersect automita of the two regex
-    #[allow(unreachable_code, unused_variables)]
     pub fn intersection_is_empty(lhs: &Self, rhs: &Self) -> bool {
         use self::Inst::*;
 
@@ -620,9 +619,6 @@ pub enum SkipInst {
     /// See Ranges
     SkipBytes(InstBytes),
 
-    // TODO(ethan): if this ends up getting us a win, try benchmarking
-    //              it alone. See about adding it to the normal engine
-    //              for a speedup.
     /// ScanLiteral tells the regex engine that it is safe to scan
     /// forward until it sees the given literal. This skip strategy
     /// is meant as an optimization to speed up kleene star (especially

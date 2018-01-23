@@ -625,8 +625,8 @@ pub mod bytes {
     pub use re_trait::Locations;
 }
 
+mod analisys;
 mod backtrack;
-mod skip_backtrack;
 mod utf8;
 mod compile;
 mod dfa;
@@ -652,7 +652,7 @@ mod simd_accel;
 #[path = "simd_fallback/mod.rs"]
 mod simd_accel;
 mod sparse;
-
+mod skip_backtrack;
 mod skip_pikevm;
 
 /// The `internal` module exists to support the `regex!` macro and other
