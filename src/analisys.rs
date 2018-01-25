@@ -14,6 +14,20 @@ macro_rules! trace {
     }
 }
 
+/// Determines if a set of regular expressions have any intersecting
+/// trigger sets between them.
+pub fn branches_have_inter_tsets(branches: &[&Expr]) -> bool {
+    for e1 in branches {
+        for e2 in branches {
+            if inter_tset(e1, e2) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
 // This macro is to be used when rhs is a terminal expression.
 // If lhs is a terminal expression it will determine intersection.
 // If not, it flips the operands in order to drill down on the
@@ -22,14 +36,14 @@ macro_rules! term_intersects {
     ($lhs:expr, $rhs:expr, $c:expr, $casei:expr) => {
         match terminal_intersecting_char($lhs, $c, $casei) {
             Some(res) => res,
-            None => intersecting_trigger_set($rhs, $lhs),
+            None => inter_tset($rhs, $lhs),
         }
     }
 }
 
 /// Determines if the two regular expressions have an intersecting
 /// trigger set.
-pub fn intersecting_trigger_set(lhs: &Expr, rhs: &Expr) -> bool {
+fn inter_tset(lhs: &Expr, rhs: &Expr) -> bool {
     trace!("its: lhs={:?} rhs={:?}", lhs, rhs);
     match rhs {
         // base cases
@@ -61,12 +75,12 @@ pub fn intersecting_trigger_set(lhs: &Expr, rhs: &Expr) -> bool {
         &Expr::NotWordBoundary => unreachable!("empty look"),
         &Expr::NotWordBoundaryAscii => unreachable!("empty look"),
         &Expr::Group { ref e, i: _, name: _ } =>
-            intersecting_trigger_set(lhs, &*e),
-        &Expr::Concat(ref es) => intersecting_trigger_set(lhs, &es[0]),
+            inter_tset(lhs, &*e),
+        &Expr::Concat(ref es) => inter_tset(lhs, &es[0]),
         &Expr::Repeat { ref e, r: _, greedy: _ }  =>
-            intersecting_trigger_set(lhs, &*e),
+            inter_tset(lhs, &*e),
         &Expr::Alternate(ref es) =>
-            es.iter().any(|e| intersecting_trigger_set(lhs, e)),
+            es.iter().any(|e| inter_tset(lhs, e)),
     }
 }
 
@@ -81,10 +95,6 @@ fn terminal_intersecting_char(e: &Expr, c: char, casei: bool) -> Option<bool> {
     } else {
         terminal_its_char(e, c)
     }
-}
-
-fn oor(lhs: Option<bool>, rhs: Option<bool>) -> Option<bool> {
-    lhs.and_then(|x| rhs.map(|y| x || y))
 }
 
 /// The main driver for `terminal_intersecting_char`
@@ -129,6 +139,14 @@ fn terminal_its_char(e: &Expr, c: char) -> Option<bool> {
         // TODO(ethan): empty looks?
         _ => None
     }
+}
+
+//
+// Utils
+//
+
+fn oor(lhs: Option<bool>, rhs: Option<bool>) -> Option<bool> {
+    lhs.and_then(|x| rhs.map(|y| x || y))
 }
 
 #[cfg(test)]

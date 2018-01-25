@@ -23,6 +23,8 @@ macro_rules! trace {
     }
 }
 
+use analisys::branches_have_inter_tsets;
+
 use syntax::{
     Expr, Repeater, CharClass, ClassRange, ByteClass, ByteRange,
     is_word_byte, Literals, Lit, SyntaxVisitor, SyntaxVisitable
@@ -889,6 +891,7 @@ impl Compiler {
             _ => unreachable!("last repeat is not a repeat after all!"),
         };
 
+        // for program analisys, not for the final result
         let repeats_program = try!(self.compile_repeats_prog(repeats));
 
         let all_dotstars = repeats.iter().all(|e| self.expr_is_repeated_any(e));
@@ -923,7 +926,6 @@ impl Compiler {
                             && try!(self.lit_in_repeats(&repeats_program, &term)) {
                             false
                         } else {
-                            // TODO(ethan): remove this code duplication.
                             if idx >= self.compiled.captures.len() {
                                 self.compiled.captures.push(name.clone());
                                 if let Some(ref name) = *name {
@@ -964,17 +966,26 @@ impl Compiler {
         trace!("::sc_terminated_repeats compiled scan ({})", can_scan);
 
         if !can_scan {
+            // Set up the list of expressions in branch position, and
+            // check them for intersections
+            let mut branches: Vec<&Expr> =
+                repeats.into_iter().map(|x| *x).collect();
+            branches.push(&term);
+            let mut new_ctx = ctx;
+            new_ctx.branch_type = if branches_have_inter_tsets(&branches) {
+                BranchType::Intersecting
+            } else {
+                BranchType::NonIntersecting
+            };
+
             // a list of just repetitions (no terminator) will terminate the
             // mutal recursion.
-            let next = try!(self.sc_concat(ctx, repeats.into_iter().map(|x| *x)));
+            let next = try!(self.sc_concat(new_ctx, repeats.into_iter().map(|x| *x)));
             p = self.sc_continue(p, next);
-
-            let mut ni_ctx = ctx;
-            ni_ctx.branch_type = BranchType::NonIntersecting;
 
             // The expression which terminates a repeat instruction is
             // in branch position.
-            let next = try!(self.sc(ni_ctx, term));
+            let next = try!(self.sc(new_ctx, term));
             p = self.sc_continue(p, next);
         }
 
@@ -1146,15 +1157,20 @@ impl Compiler {
 
         let mut holes = vec![];
 
-        let mut ni_ctx = ctx;
-        ni_ctx.branch_type = BranchType::NonIntersecting;
+        let mut new_ctx = ctx;
+        new_ctx.branch_type =
+            if branches_have_inter_tsets(&exprs.iter().collect::<Vec<_>>()) {
+                BranchType::Intersecting
+            } else {
+                BranchType::NonIntersecting
+            };
 
         let mut p = Patch { hole: Hole::None, entry: self.sc_next() };
         for e in exprs[0..exprs.len() - 1].iter() {
             let Patch { hole: split_hole, entry: split_entry } =
                     self.sc_push_split_patch();
 
-            let inner = try!(self.sc(ni_ctx, e));
+            let inner = try!(self.sc(new_ctx, e));
             let half_split =
                 self.sc_fill_split(split_hole, Some(inner.entry), None);
             holes.push(inner.hole);
