@@ -37,7 +37,7 @@ const BIT_SIZE: usize = 32;
 const MAX_SIZE_BYTES: usize = 256 * (1 << 10); // 256 KB
 
 // Flip to true for debugging
-const TRACE: bool = true;
+const TRACE: bool = false;
 macro_rules! trace {
     ($($tts:tt)*) => {
         if TRACE {

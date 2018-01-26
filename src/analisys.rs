@@ -5,7 +5,7 @@ use syntax::{Expr};
 use std::ascii::AsciiExt;
 
 // Flip to true for debugging
-const TRACE: bool = true;
+const TRACE: bool = false;
 macro_rules! trace {
     ($($tts:tt)*) => {
         if TRACE {

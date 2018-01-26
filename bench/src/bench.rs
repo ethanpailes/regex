@@ -283,4 +283,11 @@ mod ffi;
 mod misc;
 mod regexdna;
 mod sherlock;
+
+
+#[cfg(any(
+    feature = "captures-baseline",
+    feature = "captures-skip-pike",
+    feature = "captures-skip-backtrack",
+  ))]
 mod captures;

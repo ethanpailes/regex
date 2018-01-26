@@ -51,6 +51,10 @@ re-rust = []
 re-rust-bytes = []
 re-rust-plugin = ["regex_macros"]
 re-tcl = []
+captures-baseline = ["re-rust-bytes"]
+captures-skip-pike = ["re-rust-bytes"]
+captures-skip-backtrack = ["re-rust-bytes"]
+
 
 [[bench]]
 name = "bench"
