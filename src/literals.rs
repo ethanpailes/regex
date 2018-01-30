@@ -8,6 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+use std::fmt;
 use std::mem;
 
 use aho_corasick::{Automaton, AcAutomaton, FullAcAutomaton};
@@ -187,6 +188,12 @@ impl LiteralSearcher {
     }
 }
 
+impl fmt::Display for LiteralSearcher {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.matcher)
+    }
+}
+
 impl Matcher {
     fn prefixes(lits: &syntax::Literals) -> Self {
         let sset = SingleByteSet::prefixes(lits);
@@ -239,6 +246,31 @@ impl Matcher {
         }
         let pats = lits.literals().to_owned();
         Matcher::AC(AcAutomaton::new(pats).into_full())
+    }
+}
+
+impl fmt::Display for Matcher {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match *self {
+            Matcher::Empty => write!(f, "Empty"),
+            Matcher::Bytes(ref sbs) =>
+                write!(f, "SingleByteSet({:?})", sbs.dense),
+            Matcher::Single(ref ss) => {
+                write!(f, "{}", ss)
+            }
+            Matcher::AC(ref aca) => {
+                write!(f, "Aho-Corasick({:?})", aca.patterns())
+            }
+            Matcher::Teddy128(ref teddy) => {
+                let s = teddy.patterns().iter().map(|pat| {
+                    match String::from_utf8(pat.clone()) {
+                        Ok(s) => s,
+                        Err(_) => format!("{:?}", pat),
+                    }
+                }).collect::<Vec<String>>();
+                write!(f, "Teddy({:?})", s)
+            }
+        }
     }
 }
 
@@ -517,6 +549,15 @@ impl SingleSearch {
 
     fn approximate_size(&self) -> usize {
         self.pat.len() * mem::size_of::<u8>()
+    }
+}
+
+impl fmt::Display for SingleSearch {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match String::from_utf8(self.pat.clone()) {
+            Ok(s) => write!(f, "SingleSearch({})", s),
+            Err(_) => write!(f, "SingleSearch({:?})", self.pat),
+        }
     }
 }
 

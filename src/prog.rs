@@ -260,6 +260,127 @@ impl Program {
         + (self.byte_classes.len() * mem::size_of::<u8>())
         + self.prefixes.approximate_size()
     }
+
+    fn fmt_standard(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        use self::Inst::*;
+
+        try!(write!(f, "=============== STANDARD PROGRAM =================\n"));
+
+        for (pc, inst) in self.iter().enumerate() {
+            match *inst {
+                Match(slot) => {
+                    try!(write!(f, "{:04} Match({:?})", pc, slot))
+                }
+                Save(ref inst) => {
+                    let s = format!("{:04} Save({})", pc, inst.slot);
+                    try!(write!(f, "{}", Self::fmt_with_goto(pc, inst.goto, s)));
+                }
+                Split(ref inst) => {
+                    try!(write!(f, "{:04} Split({}, {})",
+                                pc, inst.goto1, inst.goto2));
+                }
+                EmptyLook(ref inst) => {
+                    let s = format!("{:?}", inst.look);
+                    try!(write!(f, "{:04} {}",
+                                pc, Self::fmt_with_goto(pc, inst.goto, s)));
+                }
+                Char(ref inst) => {
+                    let s = format!("{:?}", inst.c);
+                    try!(write!(f, "{:04} {}",
+                                pc, Self::fmt_with_goto(pc, inst.goto, s)));
+                }
+                Ranges(ref inst) => {
+                    let ranges = inst.ranges
+                        .iter()
+                        .map(|r| format!("{:?}-{:?}", r.0, r.1))
+                        .collect::<Vec<String>>()
+                        .join(", ");
+                    try!(write!(f, "{:04} {}",
+                                pc, Self::fmt_with_goto(pc, inst.goto, ranges)));
+                }
+                Bytes(ref inst) => {
+                    let s = format!(
+                        "Bytes({}, {})",
+                        Self::fmt_visible_byte(inst.start),
+                        Self::fmt_visible_byte(inst.end));
+                    try!(write!(f, "{:04} {}",
+                                pc, Self::fmt_with_goto(pc, inst.goto, s)));
+                }
+            }
+            if pc == self.start {
+                try!(write!(f, " (start)"));
+            }
+            try!(write!(f, "\n"));
+        }
+        Ok(())
+    }
+
+    fn fmt_skip(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        use self::SkipInst::*;
+
+        try!(write!(f, "================= SKIP PROGRAM ===================\n"));
+
+        for (pc, inst) in self.skip_insts.iter().enumerate() {
+            match *inst {
+                SkipMatch(slot) => {
+                    try!(write!(f, "{:04} Match({:?})", pc, slot))
+                }
+                SkipSave(ref inst) => {
+                    let s = format!("{:04} Save({})", pc, inst.slot);
+                    try!(write!(f, "{}", Self::fmt_with_goto(pc, inst.goto, s)));
+                }
+                SkipSplit(ref inst) => {
+                    try!(write!(f, "{:04} Split({}, {})",
+                                pc, inst.goto1, inst.goto2));
+                }
+                SkipSkip(ref inst) => {
+                    try!(write!(f, "{:04} Skip({})", pc, inst.skip));
+                }
+                SkipByte(ref inst) => {
+                    let s = format!("Byte({:?} ({:?}))", inst.c as char, inst.c);
+                    try!(write!(f, "{:04} {}",
+                                pc, Self::fmt_with_goto(pc, inst.goto, s)));
+                }
+                SkipBytes(ref inst) => {
+                    let s = format!(
+                        "Bytes({}, {})",
+                        Self::fmt_visible_byte(inst.start),
+                        Self::fmt_visible_byte(inst.end));
+                    try!(write!(f, "{:04} {}",
+                                pc, Self::fmt_with_goto(pc, inst.goto, s)));
+                }
+                SkipScanLiteral(ref inst) => {
+                    let s = format!("Scan{}({})",
+                        if inst.start { "Start" } else { "End" },
+                        inst.literal);
+                    try!(write!(f, "{:04} {}", pc,
+                                Self::fmt_with_goto(pc, inst.goto, s)));
+                }
+            }
+
+            if pc == self.start {
+                try!(write!(f, " (start)"));
+            }
+
+            try!(write!(f, "\n"));
+        }
+        Ok(())
+    }
+
+    fn fmt_with_goto(cur: usize, goto: usize, fmtd: String) -> String {
+        if goto == cur + 1 {
+            fmtd
+        } else {
+            format!("{} (goto: {})", fmtd, goto)
+        }
+    }
+
+    fn fmt_visible_byte(b: u8) -> String {
+        use std::ascii::escape_default;
+        let escaped = escape_default(b).collect::<Vec<u8>>();
+        String::from_utf8_lossy(&escaped).into_owned()
+    }
+
 }
 
 impl Deref for Program {
@@ -272,69 +393,11 @@ impl Deref for Program {
 
 impl fmt::Debug for Program {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        use self::Inst::*;
-
-        fn with_goto(cur: usize, goto: usize, fmtd: String) -> String {
-            if goto == cur + 1 {
-                fmtd
-            } else {
-                format!("{} (goto: {})", fmtd, goto)
-            }
+        if self.has_skip_insts {
+            self.fmt_skip(f)
+        } else {
+            self.fmt_standard(f)
         }
-
-        fn visible_byte(b: u8) -> String {
-            use std::ascii::escape_default;
-            let escaped = escape_default(b).collect::<Vec<u8>>();
-            String::from_utf8_lossy(&escaped).into_owned()
-        }
-
-        for (pc, inst) in self.iter().enumerate() {
-            match *inst {
-                Match(slot) => {
-                    try!(write!(f, "{:04} Match({:?})", pc, slot))
-                }
-                Save(ref inst) => {
-                    let s = format!("{:04} Save({})", pc, inst.slot);
-                    try!(write!(f, "{}", with_goto(pc, inst.goto, s)));
-                }
-                Split(ref inst) => {
-                    try!(write!(f, "{:04} Split({}, {})",
-                                pc, inst.goto1, inst.goto2));
-                }
-                EmptyLook(ref inst) => {
-                    let s = format!("{:?}", inst.look);
-                    try!(write!(f, "{:04} {}",
-                                pc, with_goto(pc, inst.goto, s)));
-                }
-                Char(ref inst) => {
-                    let s = format!("{:?}", inst.c);
-                    try!(write!(f, "{:04} {}",
-                                pc, with_goto(pc, inst.goto, s)));
-                }
-                Ranges(ref inst) => {
-                    let ranges = inst.ranges
-                        .iter()
-                        .map(|r| format!("{:?}-{:?}", r.0, r.1))
-                        .collect::<Vec<String>>()
-                        .join(", ");
-                    try!(write!(f, "{:04} {}",
-                                pc, with_goto(pc, inst.goto, ranges)));
-                }
-                Bytes(ref inst) => {
-                    let s = format!(
-                        "Bytes({}, {})",
-                        visible_byte(inst.start),
-                        visible_byte(inst.end));
-                    try!(write!(f, "{:04} {}",
-                                pc, with_goto(pc, inst.goto, s)));
-                }
-            }
-            if pc == self.start {
-                try!(write!(f, " (start)"));
-            }
-            try!(write!(f, "\n"));
-        }
-        Ok(())
     }
 }
 

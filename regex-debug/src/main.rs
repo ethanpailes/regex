@@ -27,6 +27,7 @@ Options:
     --size-limit ARG     An approximate size limit on the total size (in bytes)
                          of a compiled regular expression program.
                          [default: 10485760]
+    --skip               Show the instruction codes for skip enabled programs.
     --bytes              Show the instruction codes for byte oriented programs.
                          (As opposed to Unicode oriented programs.)
     --dfa                Show the instruction codes for a DFA.
@@ -59,6 +60,7 @@ struct Args {
     arg_patterns: Vec<String>,
 
     flag_size_limit: usize,
+    flag_skip: bool,
     flag_bytes: bool,
     flag_dfa: bool,
     flag_dfa_reverse: bool,
@@ -174,6 +176,7 @@ fn cmd_compile(args: &Args) -> Result<()> {
             .bytes(args.flag_bytes)
             .only_utf8(!args.flag_bytes)
             .dfa(args.flag_dfa)
+            .has_skip_insts(args.flag_skip)
             .reverse(args.flag_dfa_reverse);
     let prog = try!(compiler.compile(&exprs));
     print!("{:?}", prog);

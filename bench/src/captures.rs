@@ -100,6 +100,18 @@ bench_captures!(
     1,
     "adehilmpzz".to_string());
 
+// The goal here is to blow up the bitset on the bounded backtracker
+// and make it perform poorly. The bitset usage is (regex-size * input-size),
+// so a bigger regex really helps. We also use a repetition that can't
+// be optimized.
+//
+// TODO: issue 11 
+// expectation: modest win for skipping
+bench_captures!(
+    cap_really_big_noscan,
+    regex!("a*(a|b|c|d|e|f|h|i|j|k|l|m|n|o|p|q|r|s|t|u|v)(?:w)y{1}x{2}z{3}"),
+    1,
+    format!("{}awyxxzzz", repeat("a").take(500000).collect::<String>()));
 
 /*
 // This guy has a very strange off-by-one error that I can't
