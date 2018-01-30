@@ -337,7 +337,8 @@ impl Program {
                     try!(write!(f, "{:04} Skip({})", pc, inst.skip));
                 }
                 SkipByte(ref inst) => {
-                    let s = format!("Byte({:?} ({:?}))", inst.c as char, inst.c);
+                    let s = format!("{:?} (Byte({:?}))",
+                                        inst.c as char, inst.c);
                     try!(write!(f, "{:04} {}",
                                 pc, Self::fmt_with_goto(pc, inst.goto, s)));
                 }
