@@ -111,7 +111,17 @@ bench_captures!(
     cap_really_big_noscan,
     regex!("a*(a|b|c|d|e|f|h|i|j|k|l|m|n|o|p|q|r|s|t|u|v)(?:w)y{1}x{2}z{3}"),
     1,
-    format!("{}awyxxzzz", repeat("a").take(500000).collect::<String>()));
+    format!("{}awyxxzzz", repeat("a").take(100000).collect::<String>()));
+
+// The goal here is to see what happens for a pathological case.
+//
+// expectation: The backtracker won't do well (but the bounded backtracker
+// should do fine).
+bench_captures!(
+    cap_pathological,
+    regex!("(a?a?a?a?a?a?a?a?a?a?)aaaaaaaaaa"),
+    1,
+    "aaaaaaaaaa".to_string());
 
 /*
 // This guy has a very strange off-by-one error that I can't

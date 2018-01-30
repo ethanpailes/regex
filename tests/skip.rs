@@ -128,3 +128,10 @@ fn skip_multi_level_branch() {
     let caps = re.captures(b"abr").unwrap();
     assert_eq!(b"abr", &caps[0]);
 }
+
+#[test]
+fn skip_pathological() {
+    let re = regex!("(a?a?)aa");
+    let caps = re.captures(b"aa").unwrap();
+    assert_eq!(b"aa", &caps[0]);
+}

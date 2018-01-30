@@ -29,4 +29,4 @@ echo ""
 echo "============== SKIP BACKTRACK SPEEDUP OVER PIKE =================="
 echo ""
 
-cargo benchcmp baseline.bench skip-backtrack.bench
+cargo benchcmp skip-pike.bench skip-backtrack.bench
