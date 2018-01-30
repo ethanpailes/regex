@@ -108,11 +108,6 @@ fn skip_two_rep_caps() {
     assert_eq!("bbbbbb".as_bytes(), &caps[2]);
 }
 
-//
-// Backlog of tests that fail or pass when I don't understand why
-//
-
-// fails because of bad scan opt
 #[test]
 fn skip_astar_comma() {
     let re = regex!("a*,(.)");
@@ -120,10 +115,16 @@ fn skip_astar_comma() {
     assert_eq!(b"f", &caps[1]);
 }
 
-// failes because of bad branch position optimization
 #[test]
 fn skip_branch_differentiation() {
     let re = regex!("ab.(.)|ac(.).");
     let caps = re.captures(b"acxy").unwrap();
     assert_eq!(b"x", &caps[2]);
+}
+
+#[test]
+fn skip_multi_level_branch() {
+    let re = regex!("abc|def|(:?abr|bcn)");
+    let caps = re.captures(b"abr").unwrap();
+    assert_eq!(b"abr", &caps[0]);
 }

@@ -17,9 +17,9 @@ macro_rules! trace {
 /// Determines if a set of regular expressions have any intersecting
 /// trigger sets between them.
 pub fn branches_have_inter_tsets(branches: &[&Expr]) -> bool {
-    for e1 in branches {
-        for e2 in branches {
-            if inter_tset(e1, e2) {
+    for (i, e1) in branches.iter().enumerate() {
+        for (j, e2) in branches.iter().enumerate() {
+            if i != j && inter_tset(e1, e2) {
                 return true;
             }
         }
@@ -44,7 +44,7 @@ macro_rules! term_intersects {
 /// Determines if the two regular expressions have an intersecting
 /// trigger set.
 fn inter_tset(lhs: &Expr, rhs: &Expr) -> bool {
-    trace!("its: lhs={:?} rhs={:?}", lhs, rhs);
+    trace!("inter_tset: lhs={:?} rhs={:?}", lhs, rhs);
     match rhs {
         // base cases
         &Expr::Empty => false,

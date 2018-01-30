@@ -1158,12 +1158,14 @@ impl Compiler {
         let mut holes = vec![];
 
         let mut new_ctx = ctx;
-        new_ctx.branch_type =
+        new_ctx.branch_type = ctx.branch_type.try_promote(
             if branches_have_inter_tsets(&exprs.iter().collect::<Vec<_>>()) {
                 BranchType::Intersecting
             } else {
                 BranchType::NonIntersecting
-            };
+            });
+
+        trace!("::sc_alternate branch-type={:?}", new_ctx.branch_type);
 
         let mut p = Patch { hole: Hole::None, entry: self.sc_next() };
         for e in exprs[0..exprs.len() - 1].iter() {
@@ -1182,8 +1184,10 @@ impl Compiler {
         }
 
         // the last expression does not get a branch
+        // TODO(ethan): in some cases we don't have to compile the
+        //              last expression as a skip.
         let last_e = &exprs[exprs.len() - 1];
-        let next = try!(self.sc(ctx, last_e));
+        let next = try!(self.sc(new_ctx, last_e));
         p = self.sc_continue(p, next);
         holes.push(p.hole);
 
@@ -1753,6 +1757,34 @@ enum BranchType {
     /// char 'x'
     /// ```
     Intersecting,
+}
+
+impl BranchType {
+    /// BranchTypes exist in a hierarchy, which this method enforces
+    ///
+    /// You can always move down in the hierarchy to a more limited
+    /// optimization level, but you can never go back up without
+    /// leaving the expression in question via recursion or by
+    /// moving forward in a concatenation expression.
+    ///
+    /// 0. NoBranch
+    /// 1. NonIntersecting
+    /// 2. Intersecting
+    fn try_promote(&self, new: BranchType) -> BranchType {
+        if new.rank() > self.rank() {
+            new
+        } else {
+            *self
+        }
+    }
+
+    fn rank(&self) -> usize {
+        match *self {
+            BranchType::NoBranch => 0,
+            BranchType::NonIntersecting => 1,
+            BranchType::Intersecting => 2,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
