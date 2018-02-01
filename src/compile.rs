@@ -410,6 +410,8 @@ impl Compiler {
             Empty => Ok(Patch { hole: Hole::None, entry: self.insts.len() }),
             Literal { ref chars, casei } =>
                 self.sc_literal(ctx, chars, casei),
+            LiteralBytes { ref bytes, casei } =>
+                self.sc_bytes(ctx, bytes, casei),
             Repeat { ref e, r, greedy } => self.sc_repeat(ctx, e, r, greedy),
             AnyChar => self.sc_class(ctx, &[ClassRange {
                 // For now we just support ascii. In the event that we
@@ -456,6 +458,8 @@ impl Compiler {
                 self.sc_capture(ctx, 2 * i, |c| { c.sc(ctx, e) })
             }
             Alternate(ref es) => self.sc_alternate(ctx, &**es),
+            Class(ref class) => self.sc_class(ctx, class),
+            ClassBytes(ref class) => self.sc_class_bytes(ctx, class),
             ref e => unreachable!("Unimplimented instruction: {:?}", e),
         }
     }
@@ -563,63 +567,25 @@ impl Compiler {
         &mut self,
         ctx: SkipCompilerContext,
         chars: &[char],
-        _casei: bool,
+        casei: bool,
     ) -> Result {
         trace!("::sc_literal chars={:?}", chars);
         // TODO(ethan):casei does not support case insensitivity
 
-        // For now we just support ascii
-        if ! chars.into_iter().all(|c| c.is_ascii()) {
-            // TODO(ethan):unicode
-            return Err(Error::SkipUnsupported(String::from("utf8")));
-        }
-
-        let max_skip = RUN_QUEUE_RING_SIZE - 1;
-
-        let mut p = Patch { hole: Hole::None, entry: self.sc_next() };
-
-        if ctx.branch_type == BranchType::Intersecting {
-            // If we are in an intersecting branch situation, we have to
-            // fall back to the default behavior.
-            for c in chars {
+        let bytes = chars.into_iter().map(|c| {
+            if c.is_ascii() {
                 let mut b = [0; 1];
                 c.encode_utf8(&mut b);
-                let next = self.sc_push_one(SkipInstHole::Byte {
-                    c: b[0]
-                });
-                p = self.sc_continue(p, next);
+                Some(b[0])
+            } else {
+                None
             }
-        } else {
-            // If we are in a NoBranch or NonIntersecting situation,
-            // literals compile down to a skip.
-            let mut skip_start = 0;
+        }).collect::<Option<Vec<u8>>>();
 
-            if ctx.branch_type == BranchType::NonIntersecting {
-                let mut b = [0; 1];
-                chars[0].encode_utf8(&mut b);
-
-                let next = self.sc_push_one(SkipInstHole::Byte {
-                    c: b[0]
-                });
-                p = self.sc_continue(p, next);
-                skip_start += 1;
-            }
-
-            while skip_start < chars.len() {
-                let next = self.sc_push_one(SkipInstHole::Skip {
-                    skip: if chars.len() - skip_start > max_skip {
-                              max_skip
-                          } else {
-                              chars.len() - skip_start
-                          }
-                });
-                p = self.sc_continue(p, next);
-
-                skip_start += max_skip;
-            }
+        match bytes {
+            Some(b) => self.sc_bytes(ctx, &b, casei),
+            None => Err(Error::SkipUnsupported(String::from("utf8"))),
         }
-
-        Ok(p)
     }
 
     fn c_char(&mut self, c: char, casei: bool) -> Result {
@@ -692,6 +658,56 @@ impl Compiler {
             hole = p.hole;
         }
         Ok(Patch { hole: hole, entry: entry })
+    }
+
+    /// Compile a literal into a skip. This routine must not
+    /// be used to compile a literal at the start of a branch.
+    fn sc_bytes(
+        &mut self,
+        ctx: SkipCompilerContext,
+        bytes: &[u8],
+        _casei: bool,
+    ) -> Result {
+        trace!("::sc_bytes chars={:?}", bytes);
+        // TODO(ethan):casei does not support case insensitivity
+
+        let max_skip = RUN_QUEUE_RING_SIZE - 1;
+
+        let mut p = Patch { hole: Hole::None, entry: self.sc_next() };
+
+        if ctx.branch_type == BranchType::Intersecting {
+            // If we are in an intersecting branch situation, we have to
+            // fall back to the default behavior.
+            for b in bytes {
+                let next = self.sc_push_one(SkipInstHole::Byte { c: *b });
+                p = self.sc_continue(p, next);
+            }
+        } else {
+            // If we are in a NoBranch or NonIntersecting situation,
+            // literals compile down to a skip.
+            let mut skip_start = 0;
+
+            if ctx.branch_type == BranchType::NonIntersecting {
+                let next = self.sc_push_one(SkipInstHole::Byte { c: bytes[0] });
+                p = self.sc_continue(p, next);
+                skip_start += 1;
+            }
+
+            while skip_start < bytes.len() {
+                let next = self.sc_push_one(SkipInstHole::Skip {
+                    skip: if bytes.len() - skip_start > max_skip {
+                              max_skip
+                          } else {
+                              bytes.len() - skip_start
+                          }
+                });
+                p = self.sc_continue(p, next);
+
+                skip_start += max_skip;
+            }
+        }
+
+        Ok(p)
     }
 
     fn c_byte(&mut self, b: u8, casei: bool) -> Result {

@@ -202,6 +202,8 @@ impl<'a, 'r, 's, I: Input> Bounded<'a, 'r, 's, I> {
         // there's a capture or a branch.
         self.m.jobs.push(Job::Inst { ip: 0, sp: start });
         while let Some(job) = self.m.jobs.pop() {
+            trace!("backtrack-loop: jobs={:?}", self.m.jobs);
+            trace!("backtrack-loop: job={:?}", job);
             match job {
                 Job::Inst { ip, sp } => {
                     if self.step(ip, sp) {
@@ -235,7 +237,8 @@ impl<'a, 'r, 's, I: Input> Bounded<'a, 'r, 's, I> {
             trace!("step: ip={} sp={}", ip, sp);
             match self.prog.skip_insts[ip] {
                 SkipMatch(_) => {
-                    return true;
+                    // All skip regex are anchored at the tail.
+                    return sp == input.len();
                 }
                 SkipSave(ref inst) => {
                     if let Some(&old_pos) = self.slots.get(inst.slot) {

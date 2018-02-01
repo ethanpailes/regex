@@ -286,7 +286,8 @@ mod sherlock;
 
 
 #[cfg(any(
-    feature = "captures-baseline",
+    feature = "captures-baseline-pike",
+    feature = "captures-baseline-backtrack",
     feature = "captures-skip-pike",
     feature = "captures-skip-backtrack",
   ))]

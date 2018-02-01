@@ -22,39 +22,39 @@ fn skip_longlit() {
 #[test]
 fn skip_cap() {
     let re = regex!("aaaa(bbb)cc");
-    let caps = re.captures("aaaabbbcc".as_bytes()).unwrap();
-    assert_eq!("aaaabbbcc".as_bytes(), &caps[0]);
-    assert_eq!("bbb".as_bytes(), &caps[1]);
+    let caps = re.captures(b"aaaabbbcc").unwrap();
+    assert_eq!(b"aaaabbbcc", &caps[0]);
+    assert_eq!(b"bbb", &caps[1]);
 }
 
 #[test]
 fn skip_branch() {
     let re = regex!("aaa|(bbb)c|c");
     let caps = re.captures("aaa".as_bytes()).unwrap();
-    assert_eq!("aaa".as_bytes(), &caps[0]);
+    assert_eq!(b"aaa", &caps[0]);
 
     let caps = re.captures("bbbc".as_bytes()).unwrap();
-    assert_eq!("bbb".as_bytes(), &caps[1]);
+    assert_eq!(b"bbb", &caps[1]);
 }
 
 #[test]
 fn skip_kleene_star_twoc() {
     let re = regex!("c*c");
     let caps = re.captures("cc".as_bytes()).unwrap();
-    assert_eq!("cc".as_bytes(), &caps[0]);
+    assert_eq!(b"cc", &caps[0]);
 
     let caps = re.captures("ccc".as_bytes()).unwrap();
-    assert_eq!("ccc".as_bytes(), &caps[0]);
+    assert_eq!(b"ccc", &caps[0]);
 }
 
 #[test]
 fn skip_kleene_star() {
     let re = regex!("a*(bbb)c*c");
     let caps = re.captures("aaaaabbbccc".as_bytes()).unwrap();
-    assert_eq!("aaaaabbbccc".as_bytes(), &caps[0]);
+    assert_eq!(b"aaaaabbbccc", &caps[0]);
 
     let caps = re.captures("bbbc".as_bytes()).unwrap();
-    assert_eq!("bbb".as_bytes(), &caps[1]);
+    assert_eq!(b"bbb", &caps[1]);
 }
 
 #[test]
@@ -63,24 +63,20 @@ fn skip_dotstar() {
     let haystack = format!("{}a", repeat("b").take(100).collect::<String>());
     let caps = re.captures(haystack.as_bytes()).unwrap();
     assert_eq!(haystack.as_bytes(), &caps[0]);
-    assert_eq!("a".as_bytes(), &caps[1]);
+    assert_eq!(b"a", &caps[1]);
 }
 
 #[test]
 fn skip_kleene_star_twoc_lazy() {
-    let re = regex!("c*?c");
-    let caps = re.captures("cc".as_bytes()).unwrap();
-    assert_eq!("c".as_bytes(), &caps[0]);
-
-    let caps = re.captures(b"cccc").unwrap();
-    assert_eq!("c".as_bytes(), &caps[0]);
+    let re = regex!("(c*?)c");
+    let caps = re.captures(b"cc").unwrap();
+    assert_eq!(b"c", &caps[1]);
 }
 
 #[test]
 fn skip_dotstar_compile_loop_bug() {
     regex!(".*c");
 }
-
 
 #[test]
 fn skip_capture_repeat() {
@@ -110,7 +106,7 @@ fn skip_two_rep_caps() {
 
 #[test]
 fn skip_astar_comma() {
-    let re = regex!("a*,(.)");
+    let re = regex!("a*,(.).*");
     let caps = re.captures(b"a,foo,x").unwrap();
     assert_eq!(b"f", &caps[1]);
 }
@@ -134,4 +130,11 @@ fn skip_pathological() {
     let re = regex!("(a?a?)aa");
     let caps = re.captures(b"aa").unwrap();
     assert_eq!(b"aa", &caps[0]);
+}
+
+#[test]
+fn skip_quad_scan() {
+    let re = regex!("(?:.*z|([az]*))b");
+    let caps = re.captures(b"aaazab").unwrap();
+    assert_eq!(b"aaaza", &caps[1]);
 }
