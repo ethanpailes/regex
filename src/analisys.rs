@@ -43,7 +43,7 @@ macro_rules! term_intersects {
 
 /// Determines if the two regular expressions have an intersecting
 /// trigger set.
-fn inter_tset(lhs: &Expr, rhs: &Expr) -> bool {
+pub fn inter_tset(lhs: &Expr, rhs: &Expr) -> bool {
     trace!("inter_tset: lhs={:?} rhs={:?}", lhs, rhs);
     match rhs {
         // base cases

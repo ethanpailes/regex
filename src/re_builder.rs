@@ -22,6 +22,7 @@ pub struct RegexOptions {
     pub ignore_whitespace: bool,
     pub unicode: bool,
     pub skip_mode: bool,
+    pub skip_flags: SkipOptFlags,
 }
 
 impl Default for RegexOptions {
@@ -37,6 +38,26 @@ impl Default for RegexOptions {
             ignore_whitespace: false,
             unicode: true,
             skip_mode: false,
+            skip_flags: SkipOptFlags::default(),
+        }
+    }
+}
+
+/// Flags to turn on the various skip optimizations.
+/// By default they are all on.
+#[derive(Clone, Debug)]
+pub struct SkipOptFlags {
+    pub dotstar_term: bool,
+    pub estar_term: bool,
+    pub skip_lit: bool,
+}
+
+impl Default for SkipOptFlags {
+    fn default() -> Self {
+        SkipOptFlags {
+            dotstar_term: true,
+            estar_term: true,
+            skip_lit: true,
         }
     }
 }
@@ -173,6 +194,22 @@ impl RegexBuilder {
     /// match.
     pub fn skip_mode(&mut self, mode: bool) -> &mut RegexBuilder {
         self.0.skip_mode = mode;
+        self
+    }
+
+    /// Turn the dotstar_term optimization on or off
+    pub fn skip_dotstar_term_opt(&mut self, flag: bool) -> &mut RegexBuilder {
+        self.0.skip_flags.dotstar_term = flag;
+        self
+    }
+    /// Turn the estar_term optimization on or off
+    pub fn skip_estar_term_opt(&mut self, flag: bool) -> &mut RegexBuilder {
+        self.0.skip_flags.estar_term = flag;
+        self
+    }
+    /// Turn the skip_lit optimization on or off
+    pub fn skip_skip_lit_opt(&mut self, flag: bool) -> &mut RegexBuilder {
+        self.0.skip_flags.skip_lit = flag;
         self
     }
 }

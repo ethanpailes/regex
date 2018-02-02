@@ -39,6 +39,8 @@ use prog::{
 
 use literals::{LiteralSearcher};
 
+use re_builder::{RegexOptions};
+
 use Error;
 
 type Result = result::Result<Patch, Error>;
@@ -57,11 +59,10 @@ pub struct Compiler {
     compiled: Program,
     capture_name_idx: HashMap<String, usize>,
     num_exprs: usize,
-    size_limit: usize,
     suffix_cache: SuffixCache,
     utf8_seqs: Option<Utf8Sequences>,
     byte_classes: ByteClassSet,
-    has_skip_insts: bool,
+    options: RegexOptions,
 }
 
 impl Compiler {
@@ -75,11 +76,10 @@ impl Compiler {
             compiled: Program::new(),
             capture_name_idx: HashMap::new(),
             num_exprs: 0,
-            size_limit: 10 * (1 << 20),
             suffix_cache: SuffixCache::new(1000),
             utf8_seqs: Some(Utf8Sequences::new('\x00', '\x00')),
             byte_classes: ByteClassSet::new(),
-            has_skip_insts: false,
+            options: RegexOptions::default(),
         }
     }
 
@@ -92,11 +92,10 @@ impl Compiler {
             compiled: Program::new(),
             capture_name_idx: HashMap::new(),
             num_exprs: self.num_exprs,
-            size_limit: self.size_limit,
             suffix_cache: SuffixCache::new(1000),
             utf8_seqs: Some(Utf8Sequences::new('\x00', '\x00')),
             byte_classes: ByteClassSet::new(),
-            has_skip_insts: self.has_skip_insts,
+            options: self.options.clone(),
         };
         c
     }
@@ -105,14 +104,14 @@ impl Compiler {
     /// the program approximately exceeds the given size (in bytes), then
     /// compilation will stop and return an error.
     pub fn size_limit(mut self, size_limit: usize) -> Self {
-        self.size_limit = size_limit;
+        self.options.size_limit = size_limit;
         self
     }
 
     /// If true, the compiler will generate skip instructions.
     /// Defaults to false.
     pub fn has_skip_insts(mut self, has_skip_insts: bool) -> Self {
-        self.has_skip_insts = has_skip_insts;
+        self.options.skip_mode = has_skip_insts;
         self
     }
 
@@ -208,7 +207,7 @@ impl Compiler {
         self.compiled.matches = vec![self.insts.len()];
         self.push_compiled(Inst::Match(0));
 
-        if self.has_skip_insts {
+        if self.options.skip_mode {
             try!(self.sc_compile_one(expr));
         }
 
@@ -292,7 +291,7 @@ impl Compiler {
             self.skip_insts.into_iter().map(|si| si.unwrap()).collect();
         self.compiled.byte_classes = self.byte_classes.byte_classes();
         self.compiled.capture_name_idx = Arc::new(self.capture_name_idx);
-        self.compiled.has_skip_insts = self.has_skip_insts;
+        self.compiled.has_skip_insts = self.options.skip_mode;
         Ok(self.compiled)
     }
 
@@ -675,7 +674,8 @@ impl Compiler {
 
         let mut p = Patch { hole: Hole::None, entry: self.sc_next() };
 
-        if ctx.branch_type == BranchType::Intersecting {
+        if ctx.branch_type == BranchType::Intersecting 
+            || !self.options.skip_flags.skip_lit {
             // If we are in an intersecting branch situation, we have to
             // fall back to the default behavior.
             for b in bytes {
@@ -684,7 +684,8 @@ impl Compiler {
             }
         } else {
             // If we are in a NoBranch or NonIntersecting situation,
-            // literals compile down to a skip.
+            // literals compile down to a skip (possibly with a test
+            // for the first char).
             let mut skip_start = 0;
 
             if ctx.branch_type == BranchType::NonIntersecting {
@@ -856,7 +857,7 @@ impl Compiler {
             }
 
             // After we've compiled the first char, we can revert
-            // NonIntersecting branches to NoBranch brances
+            // NonIntersecting branches to NoBranch branches
             if i == 0 {
                 ctx.branch_type = match ctx.branch_type {
                     BranchType::NonIntersecting => BranchType::NoBranch,
@@ -910,9 +911,11 @@ impl Compiler {
         // for program analisys, not for the final result
         let repeats_program = try!(self.compile_repeats_prog(repeats));
 
-        let all_dotstars = repeats.iter().all(|e| self.expr_is_repeated_any(e));
-
-        trace!("::sc_terminated_repeats all_dotstars={}", all_dotstars);
+        let can_opt_dotstar_term = 
+            self.options.skip_flags.dotstar_term
+            && repeats.iter().all(|e| self.expr_is_repeated_any(e));
+        trace!("::sc_terminated_repeats can_opt_dotstar_term={}",
+                can_opt_dotstar_term);
 
         let mut p = Patch { hole: Hole::None, entry: self.sc_next() };
 
@@ -923,12 +926,12 @@ impl Compiler {
             // TODO(ethan): case sensativity
             &Literal { ref chars, casei: _ } => {
                 trace!("::sc_terminated_repeats literal branch");
-                if !all_dotstars
+                if !can_opt_dotstar_term
                     && try!(self.lit_in_repeats(&repeats_program, &term)) {
                     false
                 } else {
                     let next = self.sc_literal_scan(
-                        ctx, chars, false, all_dotstars, greedy);
+                        ctx, chars, false, can_opt_dotstar_term, greedy);
                     p = self.sc_continue(p, next);
                     true
                 }
@@ -938,7 +941,7 @@ impl Compiler {
                 match e.deref() {
                     &Literal { ref chars, casei } => {
                         trace!("::sc_terminated_repeats group-literal branch");
-                        if !all_dotstars
+                        if !can_opt_dotstar_term
                             && try!(self.lit_in_repeats(&repeats_program, &term)) {
                             false
                         } else {
@@ -953,7 +956,7 @@ impl Compiler {
                             // First emit the literal scan, asking the scanner
                             // to drop us right at the start of the literal
                             let next = self.sc_literal_scan(
-                                ctx, chars, true, all_dotstars, greedy);
+                                ctx, chars, true, can_opt_dotstar_term, greedy);
                             p = self.sc_continue(p, next);
 
                             let mut nb_ctx = ctx;
@@ -988,11 +991,12 @@ impl Compiler {
                 repeats.into_iter().map(|x| *x).collect();
             branches.push(&term);
             let mut new_ctx = ctx;
-            new_ctx.branch_type = if branches_have_inter_tsets(&branches) {
-                BranchType::Intersecting
-            } else {
-                BranchType::NonIntersecting
-            };
+            new_ctx.branch_type = ctx.branch_type.try_promote(
+                if branches_have_inter_tsets(&branches) {
+                    BranchType::Intersecting
+                } else {
+                    BranchType::NonIntersecting
+                });
 
             // a list of just repetitions (no terminator) will terminate the
             // mutal recursion.
@@ -1016,9 +1020,18 @@ impl Compiler {
         trace!("::lit_in_repeats");
         use syntax::Expr::{Concat, AnyChar, Repeat};
 
+        // We can turn off the /e*term/ optimization by just
+        // claiming that the terminator is always contained
+        // in the repetition program.
+        if !self.options.skip_flags.estar_term {
+            return Ok(true)
+        }
+
         match repeats {
             // /.*/ is represented as None to avoid an infinite
             // recursion. It can always contain any literal.
+            // This case shouldn't come up unless the .* optimization
+            // is turned off.
             &None => Ok(true),
             &Some(ref repeats_prog) => {
                 let dotstar = Repeat {
@@ -1033,11 +1046,8 @@ impl Compiler {
                          (*lit).clone(),
                          dotstar])));
 
-                trace!("::lit_in_repeats set up for check");
-                let res = !Program::intersection_is_empty(
-                            repeats_prog, &lit_program);
-                trace!("::lit_in_repeats {}", res);
-                Ok(res)
+                Ok(!Program::intersection_is_empty(
+                            repeats_prog, &lit_program))
             }
         }
     }
@@ -1287,7 +1297,8 @@ impl Compiler {
             self.sc_push_split_patch();
 
         let mut ni_ctx = ctx;
-        ni_ctx.branch_type = BranchType::NonIntersecting;
+        ni_ctx.branch_type =
+            ctx.branch_type.try_promote(BranchType::NonIntersecting);
         let inner = try!(self.sc(ni_ctx, expr));
 
         let split_hole = if greedy {
@@ -1339,7 +1350,8 @@ impl Compiler {
             self.sc_push_split_patch();
 
         let mut ni_ctx = ctx;
-        ni_ctx.branch_type = BranchType::NonIntersecting;
+        ni_ctx.branch_type =
+            ctx.branch_type.try_promote(BranchType::NonIntersecting);
         let inner = try!(self.sc(ni_ctx, expr));
 
         // establish the loopback epsilon transition
@@ -1390,7 +1402,8 @@ impl Compiler {
         trace!("::sc_repeat_one_or_more");
 
         let mut ni_ctx = ctx;
-        ni_ctx.branch_type = BranchType::NonIntersecting;
+        ni_ctx.branch_type =
+            ctx.branch_type.try_promote(BranchType::NonIntersecting);
         let inner = try!(self.sc(ni_ctx, expr));
         let Patch { hole: split_hole, entry: split_entry } =
             self.sc_push_split_patch();
@@ -1515,7 +1528,8 @@ impl Compiler {
         }
 
         let mut ni_ctx = ctx;
-        ni_ctx.branch_type = BranchType::NonIntersecting;
+        ni_ctx.branch_type =
+            ctx.branch_type.try_promote(BranchType::NonIntersecting);
 
         let mut holes = vec![];
         for _ in min..max {
@@ -1714,8 +1728,8 @@ impl Compiler {
         let size = (self.insts.len() * size_of::<Inst>())
                  + (self.skip_insts.len() * size_of::<SkipInst>());
 
-        if size > self.size_limit {
-            Err(Error::CompiledTooBig(self.size_limit))
+        if size > self.options.size_limit {
+            Err(Error::CompiledTooBig(self.options.size_limit))
         } else {
             Ok(())
         }

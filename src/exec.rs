@@ -26,7 +26,7 @@ use literals::LiteralSearcher;
 use pikevm;
 use skip_pikevm;
 use prog::Program;
-use re_builder::RegexOptions;
+use re_builder::{RegexOptions};
 use re_bytes;
 use re_set;
 use re_trait::{RegularExpression, Slot, Locations, as_slots};
@@ -209,6 +209,22 @@ impl ExecBuilder {
         self.options.skip_mode = true;
         self.match_type = Some(MatchType::SkipRegex(
                                 MatchSkipRegexType::SkipDfa));
+        self
+    }
+
+    /// Turn the dotstar_term optimization on or off
+    pub fn skip_dotstar_term_opt(mut self, flag: bool) -> Self {
+        self.options.skip_flags.dotstar_term = flag;
+        self
+    }
+    /// Turn the estar_term optimization on or off
+    pub fn skip_estar_term_opt(mut self, flag: bool) -> Self {
+        self.options.skip_flags.estar_term = flag;
+        self
+    }
+    /// Turn the skip_lit optimization on or off
+    pub fn skip_skip_lit_opt(mut self, flag: bool) -> Self {
+        self.options.skip_flags.skip_lit = flag;
         self
     }
 
