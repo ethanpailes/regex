@@ -352,21 +352,17 @@ impl ExecBuilder {
         }
         let parsed = try!(self.parse());
         let mut nfa = try!(
-            Compiler::new()
-                     .size_limit(self.options.size_limit)
-                     .has_skip_insts(self.options.skip_mode)
+            Compiler::new(self.options.clone())
                      .bytes(self.bytes || parsed.bytes)
                      .only_utf8(self.only_utf8)
                      .compile(&parsed.exprs));
         let mut dfa = try!(
-            Compiler::new()
-                     .size_limit(self.options.size_limit)
+            Compiler::new(self.options.clone())
                      .dfa(true)
                      .only_utf8(self.only_utf8)
                      .compile(&parsed.exprs));
         let mut dfa_reverse = try!(
-            Compiler::new()
-                     .size_limit(self.options.size_limit)
+            Compiler::new(self.options.clone())
                      .dfa(true)
                      .only_utf8(self.only_utf8)
                      .reverse(true)

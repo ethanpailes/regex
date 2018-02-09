@@ -47,7 +47,13 @@ macro_rules! regex {
     }}
 }
 
-#[cfg(feature = "captures-skip-pike")]
+/////////////////////////////////////////////////////////////////////////
+//
+//                    Skip Pike Engine 
+//
+/////////////////////////////////////////////////////////////////////////
+
+#[cfg(feature = "captures-skip-pike-none")]
 macro_rules! regex {
     ($pattern:expr) => {{
         use regex::internal::ExecBuilder;
@@ -59,7 +65,117 @@ macro_rules! regex {
             .unwrap()
     }}
 }
-#[cfg(feature = "captures-skip-backtrack")]
+
+#[cfg(feature = "captures-skip-pike-ds")]
+macro_rules! regex {
+    ($pattern:expr) => {{
+        use regex::internal::ExecBuilder;
+        ExecBuilder::new($pattern)
+            .skip_pikevm()
+            .skip_dotstar_term_opt(false)
+            .only_utf8(false)
+            .build()
+            .map(regex::bytes::Regex::from)
+            .unwrap()
+    }}
+}
+
+#[cfg(feature = "captures-skip-pike-es")]
+macro_rules! regex {
+    ($pattern:expr) => {{
+        use regex::internal::ExecBuilder;
+        ExecBuilder::new($pattern)
+            .skip_pikevm()
+            .skip_estar_term_opt(false)
+            .only_utf8(false)
+            .build()
+            .map(regex::bytes::Regex::from)
+            .unwrap()
+    }}
+}
+
+#[cfg(feature = "captures-skip-pike-sl")]
+macro_rules! regex {
+    ($pattern:expr) => {{
+        use regex::internal::ExecBuilder;
+        ExecBuilder::new($pattern)
+            .skip_pikevm()
+            .skip_skip_lit_opt(false)
+            .only_utf8(false)
+            .build()
+            .map(regex::bytes::Regex::from)
+            .unwrap()
+    }}
+}
+
+#[cfg(feature = "captures-skip-pike-ds-es")]
+macro_rules! regex {
+    ($pattern:expr) => {{
+        use regex::internal::ExecBuilder;
+        ExecBuilder::new($pattern)
+            .skip_pikevm()
+            .skip_dotstar_term_opt(false)
+            .skip_estar_term_opt(false)
+            .only_utf8(false)
+            .build()
+            .map(regex::bytes::Regex::from)
+            .unwrap()
+    }}
+}
+
+#[cfg(feature = "captures-skip-pike-ds-sl")]
+macro_rules! regex {
+    ($pattern:expr) => {{
+        use regex::internal::ExecBuilder;
+        ExecBuilder::new($pattern)
+            .skip_pikevm()
+            .skip_dotstar_term_opt(false)
+            .skip_skip_lit_opt(false)
+            .only_utf8(false)
+            .build()
+            .map(regex::bytes::Regex::from)
+            .unwrap()
+    }}
+}
+
+#[cfg(feature = "captures-skip-pike-es-sl")]
+macro_rules! regex {
+    ($pattern:expr) => {{
+        use regex::internal::ExecBuilder;
+        ExecBuilder::new($pattern)
+            .skip_pikevm()
+            .skip_estar_term_opt(false)
+            .skip_skip_lit_opt(false)
+            .only_utf8(false)
+            .build()
+            .map(regex::bytes::Regex::from)
+            .unwrap()
+    }}
+}
+
+#[cfg(feature = "captures-skip-pike-ds-es-sl")]
+macro_rules! regex {
+    ($pattern:expr) => {{
+        use regex::internal::ExecBuilder;
+        ExecBuilder::new($pattern)
+            .skip_pikevm()
+            .skip_estar_term_opt(false)
+            .skip_estar_term_opt(false)
+            .skip_skip_lit_opt(false)
+            .only_utf8(false)
+            .build()
+            .map(regex::bytes::Regex::from)
+            .unwrap()
+    }}
+}
+
+/////////////////////////////////////////////////////////////////////////
+//
+//                    Skip Backtrack Engine
+//
+/////////////////////////////////////////////////////////////////////////
+
+#[cfg(feature = "captures-skip-backtrack-none")]
 macro_rules! regex {
     ($pattern:expr) => {{
         use regex::internal::ExecBuilder;
@@ -71,6 +187,115 @@ macro_rules! regex {
             .unwrap()
     }}
 }
+
+#[cfg(feature = "captures-skip-backtrack-ds")]
+macro_rules! regex {
+    ($pattern:expr) => {{
+        use regex::internal::ExecBuilder;
+        ExecBuilder::new($pattern)
+            .skip_backtrack()
+            .skip_dotstar_term_opt(false)
+            .only_utf8(false)
+            .build()
+            .map(regex::bytes::Regex::from)
+            .unwrap()
+    }}
+}
+
+#[cfg(feature = "captures-skip-backtrack-es")]
+macro_rules! regex {
+    ($pattern:expr) => {{
+        use regex::internal::ExecBuilder;
+        ExecBuilder::new($pattern)
+            .skip_backtrack()
+            .skip_estar_term_opt(false)
+            .only_utf8(false)
+            .build()
+            .map(regex::bytes::Regex::from)
+            .unwrap()
+    }}
+}
+
+#[cfg(feature = "captures-skip-backtrack-sl")]
+macro_rules! regex {
+    ($pattern:expr) => {{
+        use regex::internal::ExecBuilder;
+        ExecBuilder::new($pattern)
+            .skip_backtrack()
+            .skip_skip_lit_opt(false)
+            .only_utf8(false)
+            .build()
+            .map(regex::bytes::Regex::from)
+            .unwrap()
+    }}
+}
+
+#[cfg(feature = "captures-skip-backtrack-ds-es")]
+macro_rules! regex {
+    ($pattern:expr) => {{
+        use regex::internal::ExecBuilder;
+        ExecBuilder::new($pattern)
+            .skip_backtrack()
+            .skip_dotstar_term_opt(false)
+            .skip_estar_term_opt(false)
+            .only_utf8(false)
+            .build()
+            .map(regex::bytes::Regex::from)
+            .unwrap()
+    }}
+}
+
+#[cfg(feature = "captures-skip-backtrack-ds-sl")]
+macro_rules! regex {
+    ($pattern:expr) => {{
+        use regex::internal::ExecBuilder;
+        ExecBuilder::new($pattern)
+            .skip_backtrack()
+            .skip_dotstar_term_opt(false)
+            .skip_skip_lit_opt(false)
+            .only_utf8(false)
+            .build()
+            .map(regex::bytes::Regex::from)
+            .unwrap()
+    }}
+}
+
+#[cfg(feature = "captures-skip-backtrack-es-sl")]
+macro_rules! regex {
+    ($pattern:expr) => {{
+        use regex::internal::ExecBuilder;
+        ExecBuilder::new($pattern)
+            .skip_backtrack()
+            .skip_estar_term_opt(false)
+            .skip_skip_lit_opt(false)
+            .only_utf8(false)
+            .build()
+            .map(regex::bytes::Regex::from)
+            .unwrap()
+    }}
+}
+
+#[cfg(feature = "captures-skip-backtrack-ds-es-sl")]
+macro_rules! regex {
+    ($pattern:expr) => {{
+        use regex::internal::ExecBuilder;
+        ExecBuilder::new($pattern)
+            .skip_backtrack()
+            .skip_estar_term_opt(false)
+            .skip_estar_term_opt(false)
+            .skip_skip_lit_opt(false)
+            .only_utf8(false)
+            .build()
+            .map(regex::bytes::Regex::from)
+            .unwrap()
+    }}
+}
+
+/////////////////////////////////////////////////////////////////////////
+//
+//                             Benchmarks
+//
+/////////////////////////////////////////////////////////////////////////
 
 // I've noticed the first microbenchmark being rather slow, so
 // this guy is just here to knock the ice off the cache when
@@ -118,6 +343,7 @@ bench_captures!(cap_repeated_alternates,
     1,
     "adehilmpzz".to_string());
 
+/*
 // The goal here is to blow up the bitset on the bounded backtracker
 // and make it perform poorly. The bitset usage is (regex-size * input-size),
 // so a bigger regex really helps. We also use a repetition that can't
@@ -129,6 +355,7 @@ bench_captures!(cap_really_big_noscan,
     regex!("a*(a|b|c|d|e|f|h|i|j|k|l|m|n|o|p|q|r|s|t|u|v)(?:w)y{1}x{2}z{3}"),
     1,
     format!("{}awyxxzzz", repeat("a").take(100000).collect::<String>()));
+*/
 
 // The goal here is to see what happens for a pathological case.
 //

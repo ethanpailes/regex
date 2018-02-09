@@ -9,36 +9,25 @@ else
     FILTER=$1
 fi
 
-cargo bench --bench bench --features captures-baseline-pike ${FILTER} \
-    | tee baseline-pike.bench
+source ./skip-benchmarking-utils.sh
 
-cargo bench --bench bench --features captures-baseline-backtrack ${FILTER} \
-    | tee baseline-backtrack.bench
+bench_feature captures-baseline-pike ${FILTER}
+bench_feature captures-baseline-backtrack ${FILTER}
 
-cargo bench --bench bench --features captures-skip-pike ${FILTER} \
-    | tee skip-pike.bench
+bench_feature captures-skip-pike-none ${FILTER}
+# bench_feature captures-skip-pike-ds ${FILTER}
+# bench_feature captures-skip-pike-es ${FILTER}
+# bench_feature captures-skip-pike-sl ${FILTER}
+# bench_feature captures-skip-pike-ds-es ${FILTER}
+# bench_feature captures-skip-pike-ds-sl ${FILTER}
+# bench_feature captures-skip-pike-es-sl ${FILTER}
+# bench_feature captures-skip-pike-ds-es-sl ${FILTER}
 
-cargo bench --bench bench --features captures-skip-backtrack ${FILTER} \
-    | tee skip-backtrack.bench
-
-echo ""
-echo "==================== SKIP PIKE SPEEDUP ======================="
-echo ""
-
-cargo benchcmp baseline-pike.bench skip-pike.bench
-
-echo ""
-
-echo ""
-echo "================== SKIP BACKTRACK SPEEDUP ======================="
-echo ""
-
-cargo benchcmp baseline-backtrack.bench skip-backtrack.bench
-
-echo ""
-
-echo ""
-echo "============== SKIP BACKTRACK SPEEDUP OVER PIKE =================="
-echo ""
-
-cargo benchcmp skip-pike.bench skip-backtrack.bench
+bench_feature captures-skip-backtrack-none ${FILTER}
+bench_feature captures-skip-backtrack-ds ${FILTER}
+bench_feature captures-skip-backtrack-es ${FILTER}
+bench_feature captures-skip-backtrack-sl ${FILTER}
+bench_feature captures-skip-backtrack-ds-es ${FILTER}
+bench_feature captures-skip-backtrack-ds-sl ${FILTER}
+bench_feature captures-skip-backtrack-es-sl ${FILTER}
+bench_feature captures-skip-backtrack-ds-es-sl ${FILTER}

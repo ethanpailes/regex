@@ -69,7 +69,7 @@ impl Compiler {
     /// Create a new regular expression compiler.
     ///
     /// Various options can be set before calling `compile` on an expression.
-    pub fn new() -> Self {
+    pub fn new(options: RegexOptions) -> Self {
         Compiler {
             insts: vec![],
             skip_insts: vec![],
@@ -79,7 +79,7 @@ impl Compiler {
             suffix_cache: SuffixCache::new(1000),
             utf8_seqs: Some(Utf8Sequences::new('\x00', '\x00')),
             byte_classes: ByteClassSet::new(),
-            options: RegexOptions::default(),
+            options: options,
         }
     }
 
@@ -172,6 +172,7 @@ impl Compiler {
         mut self,
         exprs: &[Expr],
     ) -> result::Result<Program, Error> {
+        trace!("::compile skip_flags={:?}", self.options.skip_flags);
         debug_assert!(exprs.len() >= 1);
         self.num_exprs = exprs.len();
         let res = if exprs.len() == 1 {

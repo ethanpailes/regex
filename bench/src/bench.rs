@@ -254,10 +254,7 @@ macro_rules! bench_find {
 macro_rules! bench_captures {
     ($name:ident, $pattern:expr, $count:expr, $haystack:expr) => {
 
-        #[cfg(any(
-              feature = "re-rust",
-              feature = "re-rust-bytes",
-         ))]
+        #[cfg(feature = "re-rust-bytes")]
         #[bench]
         fn $name(b: &mut Bencher) {
             use std::sync::Mutex;
@@ -285,10 +282,5 @@ mod regexdna;
 mod sherlock;
 
 
-#[cfg(any(
-    feature = "captures-baseline-pike",
-    feature = "captures-baseline-backtrack",
-    feature = "captures-skip-pike",
-    feature = "captures-skip-backtrack",
-  ))]
+#[cfg(feature = "re-rust-bytes")]
 mod captures;

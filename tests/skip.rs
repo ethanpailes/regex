@@ -80,6 +80,14 @@ macro_rules! skip_test {
             }
 
             #[test]
+            fn skip_leading_dotstar() {
+                let re = regex(".*(aaaa)");
+                let caps = re.captures(b"baaaa").unwrap();
+
+                assert_eq!(b"aaaa", &caps[1]);
+            }
+
+            #[test]
             fn skip_kleene_star_twoc_lazy() {
                 let re = regex("(c*?)c");
                 let caps = re.captures(b"cc").unwrap();
