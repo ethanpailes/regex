@@ -3,6 +3,16 @@ extern crate regex;
 
 #[macro_use] mod skip;
 
+skip_test!(regex_all_opt_validation, |re| {
+    ExecBuilder::new(re)
+        .skip_backtrack()
+        .skip_validate(true)
+        .only_utf8(false)
+        .build()
+        .map(regex::bytes::Regex::from)
+        .unwrap()
+});
+
 skip_test!(regex_all_opt, |re| {
     ExecBuilder::new(re)
         .skip_backtrack()

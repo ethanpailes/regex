@@ -181,6 +181,7 @@ macro_rules! regex {
         use regex::internal::ExecBuilder;
         ExecBuilder::new($pattern)
             .skip_backtrack()
+            .skip_validate(true) // TODO: move this to a better place
             .only_utf8(false)
             .build()
             .map(regex::bytes::Regex::from)

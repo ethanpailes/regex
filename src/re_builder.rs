@@ -50,6 +50,7 @@ pub struct SkipOptFlags {
     pub dotstar_term: bool,
     pub estar_term: bool,
     pub skip_lit: bool,
+    pub validate: bool,
 }
 
 impl Default for SkipOptFlags {
@@ -58,6 +59,7 @@ impl Default for SkipOptFlags {
             dotstar_term: true,
             estar_term: true,
             skip_lit: true,
+            validate: false,
         }
     }
 }
