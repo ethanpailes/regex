@@ -66,6 +66,14 @@ pub struct Compiler {
 }
 
 impl Compiler {
+    /// Create a new regex compiler with default options
+    ///
+    /// FIXME: gross hack. I should really spend some time
+    ///        tending the configuration garden.
+    pub fn new_default() -> Self {
+        Self::new(RegexOptions::default())
+    }
+
     /// Create a new regular expression compiler.
     ///
     /// Various options can be set before calling `compile` on an expression.
@@ -164,10 +172,6 @@ impl Compiler {
     /// The compiler is guaranteed to succeed unless the program exceeds the
     /// specified size limit. If the size limit is exceeded, then compilation
     /// stops and returns an error.
-    ///
-    /// TODO(ethan): consider hiding skip compilation behind a flag
-    /// like the .nfa() and .dfa() flags. Right now it is just piggybacking
-    /// on the NFA (or actually possibly on both the NFA and the DFA).
     pub fn compile(
         mut self,
         exprs: &[Expr],
@@ -440,9 +444,9 @@ impl Compiler {
             ]),
             Concat(ref es) => {
                 if self.compiled.is_reverse {
-                    self.sc_concat(ctx, es.iter().rev())
+                    self.sc_concat(ctx, &es.iter().rev().map(|x| x).collect::<Vec<_>>())
                 } else {
-                    self.sc_concat(ctx, es)
+                    self.sc_concat(ctx, &es.iter().map(|x| x).collect::<Vec<_>>())
                 }
             }
             Group { ref e, i: None, name: None } => self.sc(ctx, e),
@@ -822,219 +826,212 @@ impl Compiler {
         Ok(Patch { hole: hole, entry: entry })
     }
 
-    fn sc_concat<'a, I>(
+    /// Compile a concatination of expressions.
+    ///
+    /// The e1 e2 .. en term optimization makes this O(n^2).
+    /// It also recursively compiles stuff for analysis, so I guess this
+    /// technically makes compilation horribly exponential in the worst
+    /// case.
+    ///
+    /// TODO(ethan): fuel. If this ever gets unstreamed, we are definitely
+    /// going to have to implement an optimization fuel mechanism to
+    /// prevent adversarial regular expressions from exploding.
+    fn sc_concat(
         &mut self, 
-        mut ctx: SkipCompilerContext,
-        exprs: I
-    ) -> Result
-        where I: IntoIterator<Item=&'a Expr>
-    {
+        ctx: SkipCompilerContext,
+        exprs: &[&Expr]
+    ) -> Result {
         trace!("::sc_concat");
-        use syntax::Expr::*;
+        // TODO(ethan): branch position stuff for repetitions.
 
         // we don't have to do any skip fusion here because the
         // literal parser has already done that for us.
         let mut p = Patch { hole: Hole::None, entry: self.sc_next() };
 
-        // We don't immediatly compile repetitions because they might
-        // have a terminator that we can scan forward to. Instead we
-        // accumulate them in a vector.
-        let mut repeats = vec![];
-        for (i, e) in exprs.into_iter().enumerate() {
-            match e {
-                rep @ &Repeat { e: _, r: _, greedy: _ } => {
-                    repeats.push(rep);
-                }
-                _ => {
-                    if repeats.len() > 0 {
-                        let next = try!(self.sc_terminated_repeats(ctx, &repeats, e));
+        // short circut the base case (perf not correctness)
+        if exprs.len() == 0 {
+            return Ok(p);
+        }
+
+        let mut noopt_start = 0;
+        for (es_end, term) in exprs.iter().enumerate().rev() {
+            if self.can_scan_to(term) {
+                for es_start in 0..es_end {
+                    let opt = try!(self.can_perform_scan_opt(
+                                            &exprs[es_start..es_end], term));
+                    if opt != ScanOptType::NoScan {
+                        // Recursivly compile the front bit
+                        let next =
+                            try!(self.sc_concat(ctx, &exprs[0..es_start]));
                         p = self.sc_continue(p, next);
+
+                        // Now the actual optimizeable bit
+                        let next = try!(opt.compile(self, ctx));
+                        p = self.sc_continue(p, next);
+
+                        noopt_start = es_end + 1;
+                        break;
+                    }
+                }
+
+                // bail out after the first scannable terminator
+                break;
+            }
+        }
+
+        if noopt_start < exprs.len() - 1 {
+            let next = try!(self.sc_concat_noopt(ctx, &exprs[noopt_start..]));
+            p = self.sc_continue(p, next);
+        }
+
+        Ok(p)
+    }
+
+    /// Compile a concatination with no optimization shennanigans.
+    ///
+    /// This method is still fairly complex in order to do the right
+    /// thing around branch position.
+    fn sc_concat_noopt(
+        &mut self,
+        ctx: SkipCompilerContext,
+        es: &[&Expr]
+    ) -> Result {
+        let mut p = Patch { hole: Hole::None, entry: self.sc_next() };
+
+        // short circut base case
+        if es.len() == 0 {
+            return Ok(p);
+        }
+
+        let mut repeats = vec![];
+        let mut repeat_inners = vec![];
+        for e in es {
+            debug_assert!(repeats.len() == repeat_inners.len());
+
+            match self.repeat_inner(e) {
+                Some(i) => {
+                    repeats.push(e);
+                    repeat_inners.push(i);
+                }
+                None => {
+                    if repeats.len() > 0 {
+                        // determine what sort of branch we are dealing
+                        // with here
+                        repeat_inners.push(e);
+                        let mut new_ctx = ctx;
+                        new_ctx.branch_type = ctx.branch_type.try_promote(
+                            if branches_have_inter_tsets(&repeat_inners) {
+                                BranchType::Intersecting
+                            } else {
+                                BranchType::NonIntersecting
+                            });
+
+                        // drain the backlog in appropriate style
+                        for r in &repeats {
+                            let next = try!(self.sc(new_ctx, r));
+                            p = self.sc_continue(p, next);
+                        }
+
+                        // compile the next in appropriate style
+                        let next = try!(self.sc(new_ctx, e));
+                        p = self.sc_continue(p, next);
+
                         repeats.clear();
+                        repeat_inners.clear();
                     } else {
                         let next = try!(self.sc(ctx, e));
                         p = self.sc_continue(p, next);
                     }
                 }
             }
-
-            // After we've compiled the first char, we can revert
-            // NonIntersecting branches to NoBranch branches
-            if i == 0 {
-                ctx.branch_type = match ctx.branch_type {
-                    BranchType::NonIntersecting => BranchType::NoBranch,
-                    bt => bt,
-                };
-            }
         }
 
-        // drain any unterminated repetitions
-        for r in repeats {
-            let next = try!(self.sc(ctx, r));
-            p = self.sc_continue(p, next);
-        }
+        debug_assert!(repeats.len() == repeat_inners.len());
 
-        Ok(p)
-    }
-
-    /// If a repetition is terminated by a literal, we can always
-    /// just scan forward for that literal and then non-deterministicly
-    /// continue scanning from the start of the repetition (in case that
-    /// literal showed up inside the repeated string) and the end of
-    /// the literal.
-    ///
-    /// If we can prove that the literal cannot appear within the repetition
-    /// we can even drop the non-determinism and just start scanning from
-    /// the end of the literal.
-    ///
-    /// The default case:
-    ///   *-scan_to_end_of_term-*
-    ///   ^                     |
-    ///   |---------------------|
-    ///
-    /// The optimal case:
-    ///   *-scan_to_end_of_term-*
-    ///
-    fn sc_terminated_repeats(
-        &mut self,
-        ctx: SkipCompilerContext,
-        repeats: &[&Expr],
-        term: &Expr
-    ) -> Result {
-        trace!("::sc_terminated_repeats");
-        use std::ops::Deref;
-        use syntax::Expr::*;
-
-        let greedy = match repeats.last() {
-            Some(& &Repeat { e: _, r: _, greedy: g }) => g,
-            _ => unreachable!("last repeat is not a repeat after all!"),
-        };
-
-        // for program analisys, not for the final result
-        let repeats_program = try!(self.compile_repeats_prog(repeats));
-
-        let can_opt_dotstar_term = 
-            self.options.skip_flags.dotstar_term
-            && repeats.iter().all(|e| self.expr_is_repeated_any(e));
-        trace!("::sc_terminated_repeats can_opt_dotstar_term={}",
-                can_opt_dotstar_term);
-
-        let mut p = Patch { hole: Hole::None, entry: self.sc_next() };
-
-        // if any of the repetitions contain a capture, we can't handle it.
-        let can_scan = ! repeats.iter()
-                                .any(|e| ContainsCaptureVisitor::check(*e));
-        let can_scan = can_scan && match term {
-            // TODO(ethan): case sensativity
-            &Literal { ref chars, casei: _ } => {
-                trace!("::sc_terminated_repeats literal branch");
-                if !can_opt_dotstar_term
-                    && try!(self.lit_in_repeats(&repeats_program, &term)) {
-                    false
-                } else {
-                    let next = self.sc_literal_scan(
-                        ctx, chars, false, can_opt_dotstar_term, greedy);
-                    p = self.sc_continue(p, next);
-                    true
-                }
-            }
-            &Group { ref e, i: Some(idx), ref name } => {
-                trace!("::sc_terminated_repeats group branch");
-                match e.deref() {
-                    &Literal { ref chars, casei } => {
-                        trace!("::sc_terminated_repeats group-literal branch");
-                        if !can_opt_dotstar_term
-                            && try!(self.lit_in_repeats(&repeats_program, &term)) {
-                            false
-                        } else {
-                            if idx >= self.compiled.captures.len() {
-                                self.compiled.captures.push(name.clone());
-                                if let Some(ref name) = *name {
-                                    self.capture_name_idx
-                                        .insert(name.to_owned(), idx);
-                                }
-                            }
-
-                            // First emit the literal scan, asking the scanner
-                            // to drop us right at the start of the literal
-                            let next = self.sc_literal_scan(
-                                ctx, chars, true, can_opt_dotstar_term, greedy);
-                            p = self.sc_continue(p, next);
-
-                            let mut nb_ctx = ctx;
-                            nb_ctx.branch_type = BranchType::NoBranch;
-
-                            // Now emit the capturing scan while jumping
-                            // over the literal itself.
-                            let next = try!(self.sc_capture(ctx, 2 * idx, |c| {
-                                // We can never be in branch position here.
-                                // We already found the literal.
-                                c.sc_literal(nb_ctx, chars, casei)
-                            }));
-                            p = self.sc_continue(p, next);
-
-                            true
-                        }
-                    }
-                    _ => false
-                }
-            }
-            // TODO(ethan): Add support for terminating literal sets,
-            //              like /a*(bbbbb|ccccc)/ OR /a*bbbbb|ccccc/
-            _ => false
-        };
-
-        trace!("::sc_terminated_repeats compiled scan ({})", can_scan);
-
-        if !can_scan {
-            // Set up the list of expressions in branch position, and
-            // check them for intersections
-            let mut branches: Vec<&Expr> =
-                repeats.into_iter().map(|x| *x).collect();
-            branches.push(&term);
+        if repeats.len() > 0 {
+            // now drain the remaining repeats
             let mut new_ctx = ctx;
             new_ctx.branch_type = ctx.branch_type.try_promote(
-                if branches_have_inter_tsets(&branches) {
+                if branches_have_inter_tsets(&repeat_inners) {
                     BranchType::Intersecting
                 } else {
                     BranchType::NonIntersecting
                 });
 
-            // a list of just repetitions (no terminator) will terminate the
-            // mutal recursion.
-            let next = try!(self.sc_concat(new_ctx, repeats.into_iter().map(|x| *x)));
-            p = self.sc_continue(p, next);
-
-            // The expression which terminates a repeat instruction is
-            // in branch position.
-            let next = try!(self.sc(new_ctx, term));
-            p = self.sc_continue(p, next);
+            // drain the backlog in appropriate style
+            for r in &repeats {
+                let next = try!(self.sc(new_ctx, r));
+                p = self.sc_continue(p, next);
+            }
         }
 
         Ok(p)
     }
 
-    fn lit_in_repeats(
-        &self,
-        repeats: &Option<Program>,
-        lit: &Expr
-    ) -> result::Result<bool, Error> {
-        trace!("::lit_in_repeats");
-        use syntax::Expr::{Concat, AnyChar, Repeat};
+    /// If `e` is a repetition, return the inner expression,
+    /// otherwise None
+    fn repeat_inner<'a> (&self, e: &'a Expr) -> Option<&'a Expr> {
+        use syntax::Expr::Repeat;
 
-        // We can turn off the /e*term/ optimization by just
-        // claiming that the terminator is always contained
-        // in the repetition program.
-        if !self.options.skip_flags.estar_term {
-            return Ok(true)
+        match e {
+            &Repeat { ref e, r: _, greedy: _ } => Some(&*e),
+            _ => None,
+        }
+    }
+
+    /// Check if we can perform a scan optimization on the given
+    /// expression chunk. If we can return something that is logically
+    /// a resumable compilation coroutine to actually perform the optimization
+    /// compilation when neccicary.
+    fn can_perform_scan_opt<'a>(
+        &mut self,
+        es: &'a [&'a Expr],
+        term: &'a Expr
+    ) -> result::Result<ScanOptType<'a>, Error> {
+        // Sanity checking
+        if es.len() == 0 {
+            return Ok(ScanOptType::NoScan)
         }
 
-        match repeats {
+        // We can't scan over a capture group
+        if es.iter().any(|e| ContainsCaptureVisitor::check(*e)) {
+            return Ok(ScanOptType::NoScan)
+        }
+
+        // The dotstar optimization
+        if self.options.skip_flags.dotstar_term
+            && es.iter().all(|e| self.expr_is_repeated_any(e)) {
+            return Ok(ScanOptType::Dotstar(es, term))
+        }
+
+        // The estar optimization
+        if self.options.skip_flags.estar_term {
+            let es_prog = try!(self.compile_es_prog(es));
+            return Ok(if try!(self.lit_not_in_es(&es_prog, term)) {
+                ScanOptType::Estar(term)
+            } else {
+                ScanOptType::NoScan
+            })
+        }
+
+        Ok(ScanOptType::NoScan)
+    }
+
+    fn lit_not_in_es(
+        &self,
+        es: &Option<Program>,
+        lit: &Expr
+    ) -> result::Result<bool, Error> {
+        trace!("::lit_in_es");
+        use syntax::Expr::{Concat, AnyChar, Repeat};
+
+        match es {
             // /.*/ is represented as None to avoid an infinite
             // recursion. It can always contain any literal.
             // This case shouldn't come up unless the .* optimization
             // is turned off.
-            &None => Ok(true),
-            &Some(ref repeats_prog) => {
+            &None => Ok(false),
+            &Some(ref es_prog) => {
                 let dotstar = Repeat {
                     e: Box::new(AnyChar),
                     r: Repeater::ZeroOrMore,
@@ -1047,8 +1044,7 @@ impl Compiler {
                          (*lit).clone(),
                          dotstar])));
 
-                Ok(!Program::intersection_is_empty(
-                            repeats_prog, &lit_program))
+                Ok(Program::intersection_is_empty(es_prog, &lit_program))
             }
         }
     }
@@ -1058,6 +1054,7 @@ impl Compiler {
     /// If `repeats` == /.*/, we return None. This repetition is special
     /// because we wrap the literals in dotstars when checking intersection,
     /// so we need to avoid an infinite recursion.
+    /* TODO: delete
     fn compile_repeats_prog(
         &self,
         repeats: &[&Expr]
@@ -1072,6 +1069,30 @@ impl Compiler {
             .compile_one(&Concat(repeats.iter()
                 .map(|x| (**x).clone())
                 .collect())).map(Some)
+    }
+    */
+
+    /// Given a list of expressions, compile its program.
+    ///
+    /// If `es` == /.*/, we return None. This expression is special
+    /// because we wrap the literals in dotstars when checking intersection,
+    /// so we need to avoid an infinite recursion. We also know that
+    /// /.*/ contains all literals, so we don't need to break out the
+    /// big algorithmic guns to decide /.*/ `intersect` /.*l.*/ == emptyset.
+    /// It is always true.
+    fn compile_es_prog(
+        &self,
+        es: &[&Expr]
+    ) -> result::Result<Option<Program>, Error> {
+        use syntax::Expr::{Concat};
+
+        if es.len() == 1 && self.expr_is_repeated_any(es[0]) {
+            return Ok(None);
+        }
+
+        self.copy_config()
+            .compile_one(&Concat(es.iter().map(|x| (**x).clone()).collect()))
+            .map(Some)
     }
 
     /// A predicate to test if an expression is a repetition of
@@ -1089,10 +1110,46 @@ impl Compiler {
         }
     }
 
+    /// A predicate to test if we can scan to an expression.
+    ///
+    /// For now this is just true on literals and captured literals,
+    /// but once we bring Aho-Corasick online for scanning it will also
+    /// match groups of literals and captured groups of literals.
+    fn can_scan_to(&self, e: &Expr) -> bool {
+        use syntax::Expr::{Literal, Group};
+
+        match e {
+            &Literal { chars: _, casei: _ } => true,
+            &Group { ref e, i: _, name: _ } => self.can_scan_to(&*e),
+            _ => false,
+        }
+    }
+
+    /// Get a literal suitable for scanning to from an expression
+    fn lit_of(&self, e: &Expr) -> Literals {
+        use syntax::Expr::{Literal, Group};
+        debug_assert!(self.can_scan_to(e));
+
+        match e {
+            &Literal { ref chars, casei } => {
+                if casei {
+                    unreachable!("lit_of called on case insensative expr");
+                }
+
+                let mut lits = Literals::empty();
+                lits.add(Lit::new(Vec::from(
+                             chars.into_iter().collect::<String>().as_bytes())));
+                lits
+            }
+            &Group { ref e, i: _, name: _ } => self.lit_of(&*e),
+            _ => unreachable!("no lit for {:?}", e),
+        }
+    }
+
     /// Emit a literal scan instruction and various window dressing
     /// depending on the flags below.
     ///
-    /// `chars` - The literal to scan forward to.
+    /// `term` - The literal(s) to scan forward to.
     /// `start` - If true, drop us off at the start of the literal at
     ///           the end of the scan (drop us off at the end otherwise).
     /// `branch` - If true, non-deterministicly branch back to the start
@@ -1101,21 +1158,24 @@ impl Compiler {
     ///            repetition. Determines the order of the branch gotos.
     fn sc_literal_scan(
         &mut self,
-        _ctx: SkipCompilerContext,
-        chars: &Vec<char>,
-        start: bool,
+        ctx: SkipCompilerContext,
+        term: &Expr,
         branch: bool,
         greedy: bool, 
-        ) -> Patch
+        ) -> Result
     {
+        use syntax::Expr::Group;
         trace!("::sc_literal_scan");
-        // First, emit the scan instruction.
-        let mut lits = Literals::empty();
-        lits.add(Lit::new(Vec::from(
-                     chars.into_iter().collect::<String>().as_bytes())));
-        let scan = self.sc_push_one(SkipInstHole::ScanLiteral {
-            literal: LiteralSearcher::prefixes(lits),
-            start: start,
+
+        let (capture_term, cap_idx, cap_name) = match term {
+            &Group { e: _, ref i, ref name } => (true, i, name),
+            _ => (false, &None, &None)
+        };
+
+        let lit = self.lit_of(term);
+        let mut p = self.sc_push_one(SkipInstHole::ScanLiteral {
+            literal: LiteralSearcher::prefixes(lit),
+            start: capture_term,
         });
 
         if branch {
@@ -1124,18 +1184,44 @@ impl Compiler {
                 self.sc_push_split_patch();
 
             let split_hole = if greedy {
-                self.sc_fill_split(split_hole, Some(scan.entry), None)
+                self.sc_fill_split(split_hole, Some(p.entry), None)
             } else {
-                self.sc_fill_split(split_hole, None, Some(scan.entry))
+                self.sc_fill_split(split_hole, None, Some(p.entry))
             };
 
-            self.sc_continue(scan, Patch {
+            p = self.sc_continue(p, Patch {
                 hole: split_hole,
                 entry: split_entry,
-            })
-        } else {
-            scan
+            });
         }
+
+        if capture_term {
+            let cap_idx = cap_idx.unwrap();
+
+            if cap_idx >= self.compiled.captures.len() {
+                self.compiled.captures.push(cap_name.clone());
+                if let Some(ref name) = *cap_name {
+                    self.capture_name_idx.insert(name.to_owned(), cap_idx);
+                }
+            }
+
+            // We can never be in branch position here.
+            // We already found the literal(s).
+            let mut nb_ctx = ctx;
+            nb_ctx.branch_type = BranchType::NoBranch;
+
+            // Now emit the capturing scan while jumping
+            // over the literal itself.
+            let next = try!(self.sc_capture(ctx, 2 * cap_idx, |c| {
+                match term {
+                    &Group { ref e, i: _, name: _ } => c.sc(nb_ctx, &*e),
+                    _ => unreachable!("No group around the captured term.")
+                }
+            }));
+            p = self.sc_continue(p, next);
+        }
+
+        Ok(p)
     }
 
 
@@ -1200,6 +1286,9 @@ impl Compiler {
                     self.sc_push_split_patch();
 
             let inner = try!(self.sc(new_ctx, e));
+
+            trace!("::sc_alternate innere={:?} inner.hole={:?}", e, inner.hole);
+
             let half_split =
                 self.sc_fill_split(split_hole, Some(inner.entry), None);
             holes.push(inner.hole);
@@ -1217,6 +1306,8 @@ impl Compiler {
         let next = try!(self.sc(new_ctx, last_e));
         p = self.sc_continue(p, next);
         holes.push(p.hole);
+
+        trace!("::sc_alternate holes={:?}", holes);
 
         Ok(Patch { hole: Hole::Many(holes), entry: p.entry })
     }
@@ -1350,10 +1441,7 @@ impl Compiler {
         let Patch { hole: split_hole, entry: split_entry} =
             self.sc_push_split_patch();
 
-        let mut ni_ctx = ctx;
-        ni_ctx.branch_type =
-            ctx.branch_type.try_promote(BranchType::NonIntersecting);
-        let inner = try!(self.sc(ni_ctx, expr));
+        let inner = try!(self.sc(ctx, expr));
 
         // establish the loopback epsilon transition
         self.sc_fill(inner.hole, split_entry);
@@ -1446,7 +1534,8 @@ impl Compiler {
         min: u32,
     ) -> Result {
         trace!("::sc_repeat_range_min_or_more");
-        let p = try!(self.sc_concat(ctx, iter::repeat(expr).take(u32_to_usize(min))));
+        let p = try!(self.sc_concat(ctx,
+            &iter::repeat(expr).take(u32_to_usize(min)).collect::<Vec<_>>()));
 
         let next = try!(self.sc_repeat_zero_or_more(ctx, expr, greedy));
         Ok(self.sc_continue(p, next))
@@ -1522,7 +1611,8 @@ impl Compiler {
     ) -> Result {
         trace!("::sc_repeat_range");
         let (min, max) = (u32_to_usize(min), u32_to_usize(max));
-        let mut p = try!(self.sc_concat(ctx, iter::repeat(expr).take(min)));
+        let mut p = try!(self.sc_concat(ctx,
+            &iter::repeat(expr).take(min).collect::<Vec<_>>()));
 
         if min == max {
             return Ok(p);
@@ -1742,6 +1832,51 @@ enum Hole {
     None,
     One(InstPtr),
     Many(Vec<Hole>),
+}
+
+/// A flag for use in indicating which scan optimization
+/// can be executed on a particular chunk of a regex.
+/// This also lets us go full type nerd and force clients
+/// to ask which sort of scan optimization can be used
+/// before performing said optimization.
+///
+/// This should only be created by calling Compiler.can_perform_scan_opt
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+enum ScanOptType<'a> {
+    Dotstar(&'a [&'a Expr], &'a Expr),
+    Estar(&'a Expr),
+    NoScan,
+}
+
+impl<'a> ScanOptType<'a> {
+    /// Actually perform the compilation of the optimization
+    fn compile(
+        &self,
+        compiler: &mut Compiler,
+        ctx: SkipCompilerContext,
+    ) -> Result {
+        use syntax::Expr::Repeat;
+
+        match *self {
+            ScanOptType::Dotstar(es, term) => {
+                debug_assert!(compiler.options.skip_flags.dotstar_term);
+                let greedy = match es.last() {
+                    Some(& &Repeat { e: _, r: _, greedy: g }) => g,
+                    _ => unreachable!(
+                            "bug in expr_is_repeated_any es.last()={:?}.",
+                            es.last()),
+                };
+
+                compiler.sc_literal_scan(ctx, term, true, greedy)
+            }
+            ScanOptType::Estar(term) => {
+                debug_assert!(compiler.options.skip_flags.estar_term);
+                compiler.sc_literal_scan(ctx, term, false, false /* not used */)
+            }
+            ScanOptType::NoScan =>
+                unreachable!("Can't compile a noscan optimization.")
+        }
+    }
 }
 
 /// Internal metadata to track the compilation context for

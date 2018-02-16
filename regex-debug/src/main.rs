@@ -218,7 +218,7 @@ impl Args {
     }
 
     fn compiler(&self) -> Compiler {
-        Compiler::new().size_limit(self.flag_size_limit)
+        Compiler::new_default().size_limit(self.flag_size_limit)
     }
 }
 

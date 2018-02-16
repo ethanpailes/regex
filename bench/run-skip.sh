@@ -31,3 +31,5 @@ bench_feature captures-skip-backtrack-ds-es ${FILTER}
 bench_feature captures-skip-backtrack-ds-sl ${FILTER}
 bench_feature captures-skip-backtrack-es-sl ${FILTER}
 bench_feature captures-skip-backtrack-ds-es-sl ${FILTER}
+
+bench_feature captures-skip-backtrack-validation ${FILTER}

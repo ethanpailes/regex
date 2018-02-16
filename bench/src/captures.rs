@@ -181,7 +181,6 @@ macro_rules! regex {
         use regex::internal::ExecBuilder;
         ExecBuilder::new($pattern)
             .skip_backtrack()
-            .skip_validate(true) // TODO: move this to a better place
             .only_utf8(false)
             .build()
             .map(regex::bytes::Regex::from)
@@ -285,6 +284,26 @@ macro_rules! regex {
             .skip_estar_term_opt(false)
             .skip_estar_term_opt(false)
             .skip_skip_lit_opt(false)
+            .only_utf8(false)
+            .build()
+            .map(regex::bytes::Regex::from)
+            .unwrap()
+    }}
+}
+
+/////////////////////////////////////////////////////////////////////////
+//
+//                    Skip Backtrack w/validation Engine
+//
+/////////////////////////////////////////////////////////////////////////
+
+#[cfg(feature = "captures-skip-backtrack-validation")]
+macro_rules! regex {
+    ($pattern:expr) => {{
+        use regex::internal::ExecBuilder;
+        ExecBuilder::new($pattern)
+            .skip_backtrack()
+            .skip_validate(true)
             .only_utf8(false)
             .build()
             .map(regex::bytes::Regex::from)

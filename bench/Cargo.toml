@@ -72,6 +72,8 @@ captures-skip-backtrack-ds-sl = ["re-rust-bytes"]
 captures-skip-backtrack-es-sl = ["re-rust-bytes"]
 captures-skip-backtrack-ds-es-sl = ["re-rust-bytes"]
 
+captures-skip-backtrack-validation = ["re-rust-bytes"]
+
 
 [[bench]]
 name = "bench"

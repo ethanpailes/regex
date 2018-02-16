@@ -50,6 +50,25 @@ macro_rules! skip_test {
                 assert_eq!(b"bbb", &caps[1]);
             }
 
+            // TODO: "term1*term2" should just compile to scan(term2)
+            
+            // make sure we are handling the BranchType stuff around
+            // repetitions correctly
+            #[test]
+            fn skip_repeat_branch_intersecting() {
+                let re = regex("(?:aaaa)*b*(aa)");
+
+                let caps = re.captures(b"aaaabbbbaa").unwrap();
+                assert_eq!(b"aa", &caps[1]);
+            }
+
+            #[test]
+            fn skip_repeat_branch_nonintersecting() {
+                let re = regex("(bbbb)*c*(aa)aa");
+                let caps = re.captures(b"bbbbaaaa").unwrap();
+                assert_eq!(b"aa", &caps[2]);
+            }
+
             #[test]
             fn skip_kleene_star_twoc() {
                 let re = regex("c*c");

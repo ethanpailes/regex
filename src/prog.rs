@@ -334,7 +334,9 @@ impl Program {
                                 pc, inst.goto1, inst.goto2));
                 }
                 SkipSkip(ref inst) => {
-                    try!(write!(f, "{:04} Skip({})", pc, inst.skip));
+                    let s = format!("Skip({})", inst.skip);
+                    try!(write!(f, "{:04} {}", pc,
+                                Self::fmt_with_goto(pc, inst.goto, s)));
                 }
                 SkipByte(ref inst) => {
                     let s = format!("{:?} (Byte({:?}))",

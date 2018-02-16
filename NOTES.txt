@@ -1,0 +1,15 @@
+
+I'm currently working on the e1 e2 .. en term optimiztion and in order
+to get the most dakka, the algorithm is pretty tricky
+
+I need to iterate backwards over the terminators in order to get the
+biggest possible scan forward.
+
+For each terminator, I need to try all possible proceeding lists
+of instructions and then resume the compilation.
+
+Basically I need to spend more time separating my analysis out
+from my compilation stuff.
+
+The thing I'm iterating on right now is making sure that
+a*terma*term still compiles to a couple of scan instructions.
