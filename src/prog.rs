@@ -12,7 +12,7 @@ use input::Char;
 use literals::LiteralSearcher;
 
 // Flip to true for debugging
-const TRACE: bool = true;
+const TRACE: bool = false;
 macro_rules! trace {
     ($($tts:tt)*) => {
         if TRACE {

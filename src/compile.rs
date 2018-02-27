@@ -842,7 +842,6 @@ impl Compiler {
         exprs: &[&Expr]
     ) -> Result {
         trace!("::sc_concat");
-        // TODO(ethan): branch position stuff for repetitions.
 
         // we don't have to do any skip fusion here because the
         // literal parser has already done that for us.
@@ -1299,11 +1298,10 @@ impl Compiler {
             });
         }
 
-        // the last expression does not get a branch
-        // TODO(ethan): in some cases we don't have to compile the
-        //              last expression as a skip.
-        let last_e = &exprs[exprs.len() - 1];
-        let next = try!(self.sc(new_ctx, last_e));
+        // The last expression does not get a branch in the beginning,
+        // it also is not compiled with the new BranchType because we
+        // have already checked all the other possibilities.
+        let next = try!(self.sc(ctx, &exprs[exprs.len() - 1]));
         p = self.sc_continue(p, next);
         holes.push(p.hole);
 
@@ -2057,8 +2055,6 @@ impl FillTo<Inst> for InstHole {
     }
 }
 
-// This code duplication is gross, but I didn't want to keep mucking
-// about with higher kinded types. TODO(ethan): refactor.
 impl MaybeInst<SkipInst, SkipInstHole> {
     fn fill(&mut self, goto: InstPtr) -> () {
         let patched = match *self {
