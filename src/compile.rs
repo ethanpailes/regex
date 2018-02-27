@@ -622,7 +622,7 @@ impl Compiler {
     }
 
     fn sc_class(
-        &mut self, 
+        &mut self,
         ctx: SkipCompilerContext,
         ranges: &[ClassRange]
     ) -> Result {
@@ -679,7 +679,7 @@ impl Compiler {
 
         let mut p = Patch { hole: Hole::None, entry: self.sc_next() };
 
-        if ctx.branch_type == BranchType::Intersecting 
+        if ctx.branch_type == BranchType::Intersecting
             || !self.options.skip_flags.skip_lit {
             // If we are in an intersecting branch situation, we have to
             // fall back to the default behavior.
@@ -753,7 +753,7 @@ impl Compiler {
     }
 
     fn sc_class_bytes(
-        &mut self, 
+        &mut self,
         _ctx: SkipCompilerContext,
         ranges: &[ByteRange]
     ) -> Result {
@@ -765,7 +765,7 @@ impl Compiler {
                 c: ranges[0].start
             }));
         }
-            
+
         let mut holes = vec![];
 
         let mut p = Patch { hole: Hole::None, entry: self.sc_next() };
@@ -837,7 +837,7 @@ impl Compiler {
     /// going to have to implement an optimization fuel mechanism to
     /// prevent adversarial regular expressions from exploding.
     fn sc_concat(
-        &mut self, 
+        &mut self,
         ctx: SkipCompilerContext,
         exprs: &[&Expr]
     ) -> Result {
@@ -1161,7 +1161,7 @@ impl Compiler {
         ctx: SkipCompilerContext,
         term: &Expr,
         branch: bool,
-        greedy: bool, 
+        greedy: bool,
         ) -> Result
     {
         use syntax::Expr::Group;
@@ -1260,7 +1260,7 @@ impl Compiler {
     /// The last expression is handled a little differently, because
     /// we don't want to provide a split path around it.
     fn sc_alternate(
-        &mut self, 
+        &mut self,
         ctx: SkipCompilerContext,
         exprs: &[Expr]
     ) -> Result {
@@ -2398,7 +2398,7 @@ struct ContainsCaptureVisitor(bool);
 impl ContainsCaptureVisitor {
     /// Returns true if the given AST node contains a capture
     /// group, false otherwise.
-    fn check<V>(node: &V) -> bool 
+    fn check<V>(node: &V) -> bool
         where V: SyntaxVisitable
     {
         let mut ccv = ContainsCaptureVisitor(false);

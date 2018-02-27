@@ -283,7 +283,7 @@ impl<'r, I: Input> Fsm<'r, I> {
         // Main execution loop
         loop {
             while let Some((ip, sp)) = run_queue.pop() {
-                // We can nope out of here for the current thread 
+                // We can nope out of here for the current thread
                 // pointer, but we have to finish execution of the remaining
                 // threads for greedy matching support.
                 if self.step(run_queue, ip, sp, &mut slots) {
@@ -354,6 +354,12 @@ impl<'r, I: Input> Fsm<'r, I> {
                         let c = self.input.as_bytes()[sp];
                         if inst.start <= c && c <= inst.end {
                             self.add(run_queue, ip, inst.goto, sp + 1);
+                        }
+                        false
+                    }
+                    SkipEmptyLook(ref inst) => {
+                        if self.input.is_empty_match(self.input.at(sp), inst) {
+                            self.add(run_queue, ip, inst.goto, sp);
                         }
                         false
                     }
@@ -476,7 +482,7 @@ impl<'r, I: Input> Fsm<'r, I> {
                 }
 
                 // terminal instructions
-                SkipScanLiteral(_) | SkipMatch(_) |
+                SkipScanLiteral(_) | SkipMatch(_) | SkipEmptyLook(_) |
                 SkipByte(_) | SkipBytes(_) | SkipSkip(_) => {
                     trace!(
                         "add_step: (ip_caps={} ip={} sp={}) adding leaf thread",

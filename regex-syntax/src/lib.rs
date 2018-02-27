@@ -425,6 +425,17 @@ impl Expr {
         }
     }
 
+    /// Returns true iff the expression is an empty look
+    pub fn is_empty_look(&self) -> bool {
+        match *self {
+            StartLine | EndLine | StartText | EndText
+            | WordBoundary | WordBoundaryAscii
+            | NotWordBoundary | NotWordBoundaryAscii
+            => true,
+            _ => false,
+        }
+    }
+
     fn simplify(self, nest_limit: usize) -> Result<Expr> {
         fn combine_literals(es: &mut Vec<Expr>, e: Expr) {
             match (es.pop(), e) {

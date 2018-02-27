@@ -45,6 +45,7 @@ macro_rules! term_intersects {
 /// trigger set.
 pub fn inter_tset(lhs: &Expr, rhs: &Expr) -> bool {
     trace!("inter_tset: lhs={:?} rhs={:?}", lhs, rhs);
+
     match rhs {
         // base cases
         &Expr::Empty => false,
@@ -66,17 +67,37 @@ pub fn inter_tset(lhs: &Expr, rhs: &Expr) -> bool {
             class.iter().any(|br|
                 (br.start..br.end).any(|b|
                     term_intersects!(lhs, rhs, char::from(b), false))),
-        &Expr::StartLine => unreachable!("empty look"),
-        &Expr::EndLine => unreachable!("empty look"),
-        &Expr::StartText => unreachable!("empty look"),
-        &Expr::EndText => unreachable!("empty look"),
-        &Expr::WordBoundary => unreachable!("empty look"),
-        &Expr::WordBoundaryAscii => unreachable!("empty look"),
-        &Expr::NotWordBoundary => unreachable!("empty look"),
-        &Expr::NotWordBoundaryAscii => unreachable!("empty look"),
+
+
+        // At the start of a concatination empty looks are dropped.
+        //     - For {Start,End}{Line,Text} this is a conservative
+        //        assumption that we could be starting the branch
+        //        at any position. Really we could do better.
+        //     - For (Not)WordBoundary(Ascii) this is a conservative
+        //        assumption that the other branch didn't have any
+        //        sort of assertion about the previous char.
+        //
+        // Naked empty looks are conservativly treated as anychar.
+        // That is the case that we have to handle here.
+        &Expr::StartLine => inter_tset(lhs, &Expr::AnyChar),
+        &Expr::EndLine => inter_tset(lhs, &Expr::AnyChar),
+        &Expr::StartText => inter_tset(lhs, &Expr::AnyChar),
+        &Expr::EndText => inter_tset(lhs, &Expr::AnyChar),
+        &Expr::WordBoundary => inter_tset(lhs, &Expr::AnyChar),
+        &Expr::WordBoundaryAscii => inter_tset(lhs, &Expr::AnyChar),
+        &Expr::NotWordBoundary => inter_tset(lhs, &Expr::AnyChar),
+        &Expr::NotWordBoundaryAscii => inter_tset(lhs, &Expr::AnyChar),
+
+
         &Expr::Group { ref e, i: _, name: _ } =>
             inter_tset(lhs, &*e),
-        &Expr::Concat(ref es) => inter_tset(lhs, &es[0]),
+        &Expr::Concat(ref es) => {
+            if es.len() > 1 && es[0].is_empty_look() {
+                inter_tset(lhs, &es[1])
+            } else {
+                inter_tset(lhs, &es[0])
+            }
+        },
         &Expr::Repeat { ref e, r: _, greedy: _ }  =>
             inter_tset(lhs, &*e),
         &Expr::Alternate(ref es) =>
@@ -98,6 +119,10 @@ fn terminal_intersecting_char(e: &Expr, c: char, casei: bool) -> Option<bool> {
 }
 
 /// The main driver for `terminal_intersecting_char`
+///
+/// Some(true) if e is terminal and intersects with c
+/// Some(false) if e is terminal and does not intersect with c
+/// None if e is not terminal
 fn terminal_its_char(e: &Expr, c: char) -> Option<bool> {
     let mut b = [0; 4];
 
@@ -135,8 +160,19 @@ fn terminal_its_char(e: &Expr, c: char) -> Option<bool> {
                 Some(false)
             }
         }
+
+        // Empty looks are treated as AnyChars here. See the comment
+        // in inter_tset for why.
+        &Expr::StartLine => Some(true),
+        &Expr::EndLine => Some(true),
+        &Expr::StartText => Some(true),
+        &Expr::EndText => Some(true),
+        &Expr::WordBoundary => Some(true),
+        &Expr::WordBoundaryAscii => Some(true),
+        &Expr::NotWordBoundary => Some(true),
+        &Expr::NotWordBoundaryAscii => Some(true),
+
         // The rest require decomposition
-        // TODO(ethan): empty looks?
         _ => None
     }
 }
@@ -152,7 +188,7 @@ fn oor(lhs: Option<bool>, rhs: Option<bool>) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use syntax::{ExprBuilder};
-    use super::intersecting_trigger_set;
+    use super::branches_have_inter_tsets;
 
     #[test]
     fn its_lit_1() {
@@ -160,8 +196,8 @@ mod tests {
         let e2 = ExprBuilder::new().parse("a").unwrap();
         let e3 = ExprBuilder::new().parse("b").unwrap();
 
-        assert!(intersecting_trigger_set(&e1, &e2));
-        assert!(!intersecting_trigger_set(&e1, &e3));
+        assert!(branches_have_inter_tsets(&[&e1, &e2]));
+        assert!(!branches_have_inter_tsets(&[&e1, &e3]));
     }
 
     #[test]
@@ -170,8 +206,8 @@ mod tests {
         let e2 = ExprBuilder::new().parse("[a]").unwrap();
         let e3 = ExprBuilder::new().parse("[b]").unwrap();
 
-        assert!(intersecting_trigger_set(&e1, &e2));
-        assert!(!intersecting_trigger_set(&e1, &e3));
+        assert!(branches_have_inter_tsets(&[&e1, &e2]));
+        assert!(!branches_have_inter_tsets(&[&e1, &e3]));
     }
 
     #[test]
@@ -180,8 +216,8 @@ mod tests {
         let e2 = ExprBuilder::new().parse("[rlwa]").unwrap();
         let e3 = ExprBuilder::new().parse("[bcq]").unwrap();
 
-        assert!(intersecting_trigger_set(&e1, &e2));
-        assert!(!intersecting_trigger_set(&e1, &e3));
+        assert!(branches_have_inter_tsets(&[&e1, &e2]));
+        assert!(!branches_have_inter_tsets(&[&e1, &e3]));
     }
 
     #[test]
@@ -190,8 +226,8 @@ mod tests {
         let e2 = ExprBuilder::new().parse("yyyy|am|zz").unwrap();
         let e3 = ExprBuilder::new().parse("cc|ww").unwrap();
 
-        assert!(intersecting_trigger_set(&e1, &e2));
-        assert!(!intersecting_trigger_set(&e1, &e3));
+        assert!(branches_have_inter_tsets(&[&e1, &e2]));
+        assert!(!branches_have_inter_tsets(&[&e1, &e3]));
     }
 
     #[test]
@@ -200,8 +236,8 @@ mod tests {
         let e2 = ExprBuilder::new().parse("(?:aq)").unwrap();
         let e3 = ExprBuilder::new().parse("(?:m)").unwrap();
 
-        assert!(intersecting_trigger_set(&e1, &e2));
-        assert!(!intersecting_trigger_set(&e1, &e3));
+        assert!(branches_have_inter_tsets(&[&e1, &e2]));
+        assert!(!branches_have_inter_tsets(&[&e1, &e3]));
     }
 
     #[test]
@@ -210,7 +246,53 @@ mod tests {
         let e2 = ExprBuilder::new().parse("aa(?:rq)").unwrap();
         let e3 = ExprBuilder::new().parse("bb(?:m)").unwrap();
 
-        assert!(intersecting_trigger_set(&e1, &e2));
-        assert!(!intersecting_trigger_set(&e1, &e3));
+        assert!(branches_have_inter_tsets(&[&e1, &e2]));
+        assert!(!branches_have_inter_tsets(&[&e1, &e3]));
+    }
+
+    #[test]
+    fn its_word_boundary_dropped() {
+        let e1 = ExprBuilder::new().parse(r"aa").unwrap();
+        let e2 = ExprBuilder::new().parse(r"\baa").unwrap();
+        let e3 = ExprBuilder::new().parse(r"\bbb").unwrap();
+
+        assert!(branches_have_inter_tsets(&[&e1, &e2]));
+        assert!(!branches_have_inter_tsets(&[&e1, &e3]));
+    }
+
+    #[test]
+    fn its_word_boundary_all() {
+        let e1 = ExprBuilder::new().parse(r"aa").unwrap();
+        let e2 = ExprBuilder::new().parse(r"\b").unwrap();
+
+        assert!(branches_have_inter_tsets(&[&e1, &e2]));
+    }
+
+    #[test]
+    fn its_not_word_boundary_dropped() {
+        let e1 = ExprBuilder::new().parse(r"aa").unwrap();
+        let e2 = ExprBuilder::new().parse(r"\Baa").unwrap();
+        let e3 = ExprBuilder::new().parse(r"\Bbb").unwrap();
+
+        assert!(branches_have_inter_tsets(&[&e1, &e2]));
+        assert!(!branches_have_inter_tsets(&[&e1, &e3]));
+    }
+
+    #[test]
+    fn its_not_word_boundary_all() {
+        let e1 = ExprBuilder::new().parse(r"aa").unwrap();
+        let e2 = ExprBuilder::new().parse(r"\B").unwrap();
+
+        assert!(branches_have_inter_tsets(&[&e1, &e2]));
+    }
+
+    #[test]
+    fn its_start_anchor_dropped() {
+        let e1 = ExprBuilder::new().parse(r"aa").unwrap();
+        let e2 = ExprBuilder::new().parse(r"^aa").unwrap();
+        let e3 = ExprBuilder::new().parse(r"^bb").unwrap();
+
+        assert!(branches_have_inter_tsets(&[&e1, &e2]));
+        assert!(!branches_have_inter_tsets(&[&e1, &e3]));
     }
 }

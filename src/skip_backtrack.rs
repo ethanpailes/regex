@@ -181,7 +181,7 @@ impl<'a, 'r, 's, I: Input> Bounded<'a, 'r, 's, I> {
                 self.backtrack(sp)
             };
         }
-        
+
         // It's not anchored so we have to try the parse at every
         // point in the input.
         loop {
@@ -236,7 +236,7 @@ impl<'a, 'r, 's, I: Input> Bounded<'a, 'r, 's, I> {
         loop {
             // This loop is an optimization to avoid constantly pushing/popping
             // from the stack. Namely, if we're pushing a job only to run it
-            // next, avoid the push and just mutate `ip` (and possibly `at`)
+            // next, avoid the push and just mutate `ip` (and possibly `sp`)
             // in place.
             if self.has_visited(ip, sp) {
                 return false;
@@ -280,6 +280,13 @@ impl<'a, 'r, 's, I: Input> Bounded<'a, 'r, 's, I> {
                     if sp < input.len() && inst.matches(input[sp]) {
                         ip = inst.goto;
                         sp += 1;
+                    } else {
+                        return false;
+                    }
+                }
+                SkipEmptyLook(ref inst) => {
+                    if self.input.is_empty_match(self.input.at(sp), inst) {
+                        ip = inst.goto;
                     } else {
                         return false;
                     }
