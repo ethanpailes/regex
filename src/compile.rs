@@ -405,6 +405,7 @@ impl Compiler {
     }
 
     fn sc(&mut self, ctx: SkipCompilerContext, expr: &Expr) -> Result {
+        use prog;
         use syntax::Expr::*;
 
         trace!("::sc expr={:?}", expr);
@@ -464,7 +465,54 @@ impl Compiler {
             Alternate(ref es) => self.sc_alternate(ctx, &**es),
             Class(ref class) => self.sc_class(ctx, class),
             ClassBytes(ref class) => self.sc_class_bytes(ctx, class),
-            ref e => unreachable!("Unimplimented instruction: {:?}", e),
+
+            // empty looks
+            StartLine if self.compiled.is_reverse => {
+                self.byte_classes.set_range(b'\n', b'\n');
+                self.sc_empty_look(ctx, prog::EmptyLook::EndLine)
+            }
+            StartLine => {
+                self.byte_classes.set_range(b'\n', b'\n');
+                self.sc_empty_look(ctx, prog::EmptyLook::StartLine)
+            }
+            EndLine if self.compiled.is_reverse => {
+                self.byte_classes.set_range(b'\n', b'\n');
+                self.sc_empty_look(ctx, prog::EmptyLook::StartLine)
+            }
+            EndLine => {
+                self.byte_classes.set_range(b'\n', b'\n');
+                self.sc_empty_look(ctx, prog::EmptyLook::EndLine)
+            }
+            StartText if self.compiled.is_reverse => {
+                self.sc_empty_look(ctx, prog::EmptyLook::EndText)
+            }
+            StartText => {
+                self.sc_empty_look(ctx, prog::EmptyLook::StartText)
+            }
+            EndText if self.compiled.is_reverse => {
+                self.sc_empty_look(ctx, prog::EmptyLook::StartText)
+            }
+            EndText => {
+                self.sc_empty_look(ctx, prog::EmptyLook::EndText)
+            }
+            WordBoundary => {
+                self.compiled.has_unicode_word_boundary = true;
+                self.byte_classes.set_word_boundary();
+                self.sc_empty_look(ctx, prog::EmptyLook::WordBoundary)
+            }
+            NotWordBoundary => {
+                self.compiled.has_unicode_word_boundary = true;
+                self.byte_classes.set_word_boundary();
+                self.sc_empty_look(ctx, prog::EmptyLook::NotWordBoundary)
+            }
+            WordBoundaryAscii => {
+                self.byte_classes.set_word_boundary();
+                self.sc_empty_look(ctx, prog::EmptyLook::WordBoundaryAscii)
+            }
+            NotWordBoundaryAscii => {
+                self.byte_classes.set_word_boundary();
+                self.sc_empty_look(ctx, prog::EmptyLook::NotWordBoundaryAscii)
+            }
         }
     }
 
@@ -806,6 +854,14 @@ impl Compiler {
     fn c_empty_look(&mut self, look: EmptyLook) -> Result {
         let hole = self.push_hole(InstHole::EmptyLook { look: look });
         Ok(Patch { hole: hole, entry: self.insts.len() - 1 })
+    }
+
+    fn sc_empty_look(
+        &mut self,
+        _ctx: SkipCompilerContext,
+        look: EmptyLook,
+    ) -> Result {
+        Ok(self.sc_push_one(SkipInstHole::EmptyLook { look: look }))
     }
 
     fn c_concat<'a, I>(&mut self, exprs: I) -> Result
@@ -2116,6 +2172,7 @@ enum SkipInstHole {
     Bytes { start: u8, end: u8 },
     Skip { skip: usize },
     ScanLiteral { literal: LiteralSearcher, start: bool },
+    EmptyLook { look: EmptyLook },
 }
 
 impl FillTo<SkipInst> for SkipInstHole {
@@ -2145,6 +2202,11 @@ impl FillTo<SkipInst> for SkipInstHole {
                     goto: goto,
                     literal: literal.clone(),
                     start: start
+                }),
+            SkipInstHole::EmptyLook { look } =>
+                SkipInst::SkipEmptyLook(InstEmptyLook {
+                    goto: goto,
+                    look: look
                 }),
         }
     }

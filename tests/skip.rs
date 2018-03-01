@@ -178,6 +178,28 @@ macro_rules! skip_test {
                 let caps = re.captures(b"aaazab").unwrap();
                 assert_eq!(b"aaaza", &caps[1]);
             }
+
+            #[test]
+            fn skip_start_end_text() {
+                let re = regex("^a(b)a$");
+                let caps = re.captures(b"aba").unwrap();
+                assert_eq!(b"b", &caps[1]);
+            }
+
+            #[test]
+            fn skip_word_boundary() {
+                let re = regex(r"\b(test)\b.*");
+                let caps = re.captures(b"test ing").unwrap();
+                assert_eq!(b"test", &caps[1]);
+            }
+
+            #[test]
+            fn skip_word_boundary2() {
+                let re = regex(r" \b(test)\b.*");
+                let caps = re.captures(b" test ing").unwrap();
+                assert_eq!(b"test", &caps[1]);
+            }
+
         }
     }
 }
