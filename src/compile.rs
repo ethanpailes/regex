@@ -23,7 +23,7 @@ macro_rules! trace {
     }
 }
 
-use analisys::branches_have_inter_tsets;
+use analisys::branches_have_inter_fsets;
 
 use syntax::{
     Expr, Repeater, CharClass, ClassRange, ByteClass, ByteRange,
@@ -975,7 +975,7 @@ impl Compiler {
                         repeat_inners.push(e);
                         let mut new_ctx = ctx;
                         new_ctx.branch_type = ctx.branch_type.try_promote(
-                            if branches_have_inter_tsets(&repeat_inners) {
+                            if branches_have_inter_fsets(&repeat_inners) {
                                 BranchType::Intersecting
                             } else {
                                 BranchType::NonIntersecting
@@ -1007,7 +1007,7 @@ impl Compiler {
             // now drain the remaining repeats
             let mut new_ctx = ctx;
             new_ctx.branch_type = ctx.branch_type.try_promote(
-                if branches_have_inter_tsets(&repeat_inners) {
+                if branches_have_inter_fsets(&repeat_inners) {
                     BranchType::Intersecting
                 } else {
                     BranchType::NonIntersecting
@@ -1327,7 +1327,7 @@ impl Compiler {
 
         let mut new_ctx = ctx;
         new_ctx.branch_type = ctx.branch_type.try_promote(
-            if branches_have_inter_tsets(&exprs.iter().collect::<Vec<_>>()) {
+            if branches_have_inter_fsets(&exprs.iter().collect::<Vec<_>>()) {
                 BranchType::Intersecting
             } else {
                 BranchType::NonIntersecting
@@ -1964,8 +1964,8 @@ enum BranchType {
     /// ```
     NonIntersecting,
 
-    /// Compile a branch with a trigger set that intersects with
-    /// the trigger sets of other branches. The trigger set can
+    /// Compile a branch with a first set that intersects with
+    /// the first sets of other branches. The first set can
     /// be thought of as the 1-preview of the regex. For example
     /// `/axxx|axx/` is a regex with an intersecting branch.
     /// The first branch would have to be compiled as:

@@ -15,11 +15,11 @@ macro_rules! trace {
 }
 
 /// Determines if a set of regular expressions have any intersecting
-/// trigger sets between them.
-pub fn branches_have_inter_tsets(branches: &[&Expr]) -> bool {
+/// first sets between them.
+pub fn branches_have_inter_fsets(branches: &[&Expr]) -> bool {
     for (i, e1) in branches.iter().enumerate() {
         for (j, e2) in branches.iter().enumerate() {
-            if i != j && inter_tset(e1, e2) {
+            if i != j && inter_fset(e1, e2) {
                 return true;
             }
         }
@@ -36,15 +36,15 @@ macro_rules! term_intersects {
     ($lhs:expr, $rhs:expr, $c:expr, $casei:expr) => {
         match terminal_intersecting_char($lhs, $c, $casei) {
             Some(res) => res,
-            None => inter_tset($rhs, $lhs),
+            None => inter_fset($rhs, $lhs),
         }
     }
 }
 
 /// Determines if the two regular expressions have an intersecting
-/// trigger set.
-pub fn inter_tset(lhs: &Expr, rhs: &Expr) -> bool {
-    trace!("inter_tset: lhs={:?} rhs={:?}", lhs, rhs);
+/// first set.
+pub fn inter_fset(lhs: &Expr, rhs: &Expr) -> bool {
+    trace!("inter_fset: lhs={:?} rhs={:?}", lhs, rhs);
 
     match rhs {
         // base cases
@@ -79,35 +79,35 @@ pub fn inter_tset(lhs: &Expr, rhs: &Expr) -> bool {
         //
         // Naked empty looks are conservativly treated as anychar.
         // That is the case that we have to handle here.
-        &Expr::StartLine => inter_tset(lhs, &Expr::AnyChar),
-        &Expr::EndLine => inter_tset(lhs, &Expr::AnyChar),
-        &Expr::StartText => inter_tset(lhs, &Expr::AnyChar),
-        &Expr::EndText => inter_tset(lhs, &Expr::AnyChar),
-        &Expr::WordBoundary => inter_tset(lhs, &Expr::AnyChar),
-        &Expr::WordBoundaryAscii => inter_tset(lhs, &Expr::AnyChar),
-        &Expr::NotWordBoundary => inter_tset(lhs, &Expr::AnyChar),
-        &Expr::NotWordBoundaryAscii => inter_tset(lhs, &Expr::AnyChar),
+        &Expr::StartLine => inter_fset(lhs, &Expr::AnyChar),
+        &Expr::EndLine => inter_fset(lhs, &Expr::AnyChar),
+        &Expr::StartText => inter_fset(lhs, &Expr::AnyChar),
+        &Expr::EndText => inter_fset(lhs, &Expr::AnyChar),
+        &Expr::WordBoundary => inter_fset(lhs, &Expr::AnyChar),
+        &Expr::WordBoundaryAscii => inter_fset(lhs, &Expr::AnyChar),
+        &Expr::NotWordBoundary => inter_fset(lhs, &Expr::AnyChar),
+        &Expr::NotWordBoundaryAscii => inter_fset(lhs, &Expr::AnyChar),
 
 
         &Expr::Group { ref e, i: _, name: _ } =>
-            inter_tset(lhs, &*e),
+            inter_fset(lhs, &*e),
         &Expr::Concat(ref es) => {
             if es.len() > 1 && es[0].is_empty_look() {
-                inter_tset(lhs, &es[1])
+                inter_fset(lhs, &es[1])
             } else {
-                inter_tset(lhs, &es[0])
+                inter_fset(lhs, &es[0])
             }
         },
         &Expr::Repeat { ref e, r: _, greedy: _ }  =>
-            inter_tset(lhs, &*e),
+            inter_fset(lhs, &*e),
         &Expr::Alternate(ref es) =>
-            es.iter().any(|e| inter_tset(lhs, e)),
+            es.iter().any(|e| inter_fset(lhs, e)),
     }
 }
 
 /// Determines if the expression is a terminal expression
 /// (an expression that requires no further decomposition in
-/// order to arrive at the trigger set). If it is, returns
+/// order to arrive at the first set). If it is, returns
 /// a flag indicating if the given char matched.
 fn terminal_intersecting_char(e: &Expr, c: char, casei: bool) -> Option<bool> {
     if casei {
@@ -162,7 +162,7 @@ fn terminal_its_char(e: &Expr, c: char) -> Option<bool> {
         }
 
         // Empty looks are treated as AnyChars here. See the comment
-        // in inter_tset for why.
+        // in inter_fset for why.
         &Expr::StartLine => Some(true),
         &Expr::EndLine => Some(true),
         &Expr::StartText => Some(true),
@@ -188,7 +188,7 @@ fn oor(lhs: Option<bool>, rhs: Option<bool>) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use syntax::{ExprBuilder};
-    use super::branches_have_inter_tsets;
+    use super::branches_have_inter_fsets;
 
     #[test]
     fn its_lit_1() {
@@ -196,8 +196,8 @@ mod tests {
         let e2 = ExprBuilder::new().parse("a").unwrap();
         let e3 = ExprBuilder::new().parse("b").unwrap();
 
-        assert!(branches_have_inter_tsets(&[&e1, &e2]));
-        assert!(!branches_have_inter_tsets(&[&e1, &e3]));
+        assert!(branches_have_inter_fsets(&[&e1, &e2]));
+        assert!(!branches_have_inter_fsets(&[&e1, &e3]));
     }
 
     #[test]
@@ -206,8 +206,8 @@ mod tests {
         let e2 = ExprBuilder::new().parse("[a]").unwrap();
         let e3 = ExprBuilder::new().parse("[b]").unwrap();
 
-        assert!(branches_have_inter_tsets(&[&e1, &e2]));
-        assert!(!branches_have_inter_tsets(&[&e1, &e3]));
+        assert!(branches_have_inter_fsets(&[&e1, &e2]));
+        assert!(!branches_have_inter_fsets(&[&e1, &e3]));
     }
 
     #[test]
@@ -216,8 +216,8 @@ mod tests {
         let e2 = ExprBuilder::new().parse("[rlwa]").unwrap();
         let e3 = ExprBuilder::new().parse("[bcq]").unwrap();
 
-        assert!(branches_have_inter_tsets(&[&e1, &e2]));
-        assert!(!branches_have_inter_tsets(&[&e1, &e3]));
+        assert!(branches_have_inter_fsets(&[&e1, &e2]));
+        assert!(!branches_have_inter_fsets(&[&e1, &e3]));
     }
 
     #[test]
@@ -226,8 +226,8 @@ mod tests {
         let e2 = ExprBuilder::new().parse("yyyy|am|zz").unwrap();
         let e3 = ExprBuilder::new().parse("cc|ww").unwrap();
 
-        assert!(branches_have_inter_tsets(&[&e1, &e2]));
-        assert!(!branches_have_inter_tsets(&[&e1, &e3]));
+        assert!(branches_have_inter_fsets(&[&e1, &e2]));
+        assert!(!branches_have_inter_fsets(&[&e1, &e3]));
     }
 
     #[test]
@@ -236,8 +236,8 @@ mod tests {
         let e2 = ExprBuilder::new().parse("(?:aq)").unwrap();
         let e3 = ExprBuilder::new().parse("(?:m)").unwrap();
 
-        assert!(branches_have_inter_tsets(&[&e1, &e2]));
-        assert!(!branches_have_inter_tsets(&[&e1, &e3]));
+        assert!(branches_have_inter_fsets(&[&e1, &e2]));
+        assert!(!branches_have_inter_fsets(&[&e1, &e3]));
     }
 
     #[test]
@@ -246,8 +246,8 @@ mod tests {
         let e2 = ExprBuilder::new().parse("aa(?:rq)").unwrap();
         let e3 = ExprBuilder::new().parse("bb(?:m)").unwrap();
 
-        assert!(branches_have_inter_tsets(&[&e1, &e2]));
-        assert!(!branches_have_inter_tsets(&[&e1, &e3]));
+        assert!(branches_have_inter_fsets(&[&e1, &e2]));
+        assert!(!branches_have_inter_fsets(&[&e1, &e3]));
     }
 
     #[test]
@@ -256,8 +256,8 @@ mod tests {
         let e2 = ExprBuilder::new().parse(r"\baa").unwrap();
         let e3 = ExprBuilder::new().parse(r"\bbb").unwrap();
 
-        assert!(branches_have_inter_tsets(&[&e1, &e2]));
-        assert!(!branches_have_inter_tsets(&[&e1, &e3]));
+        assert!(branches_have_inter_fsets(&[&e1, &e2]));
+        assert!(!branches_have_inter_fsets(&[&e1, &e3]));
     }
 
     #[test]
@@ -265,7 +265,7 @@ mod tests {
         let e1 = ExprBuilder::new().parse(r"aa").unwrap();
         let e2 = ExprBuilder::new().parse(r"\b").unwrap();
 
-        assert!(branches_have_inter_tsets(&[&e1, &e2]));
+        assert!(branches_have_inter_fsets(&[&e1, &e2]));
     }
 
     #[test]
@@ -274,8 +274,8 @@ mod tests {
         let e2 = ExprBuilder::new().parse(r"\Baa").unwrap();
         let e3 = ExprBuilder::new().parse(r"\Bbb").unwrap();
 
-        assert!(branches_have_inter_tsets(&[&e1, &e2]));
-        assert!(!branches_have_inter_tsets(&[&e1, &e3]));
+        assert!(branches_have_inter_fsets(&[&e1, &e2]));
+        assert!(!branches_have_inter_fsets(&[&e1, &e3]));
     }
 
     #[test]
@@ -283,7 +283,7 @@ mod tests {
         let e1 = ExprBuilder::new().parse(r"aa").unwrap();
         let e2 = ExprBuilder::new().parse(r"\B").unwrap();
 
-        assert!(branches_have_inter_tsets(&[&e1, &e2]));
+        assert!(branches_have_inter_fsets(&[&e1, &e2]));
     }
 
     #[test]
@@ -292,7 +292,7 @@ mod tests {
         let e2 = ExprBuilder::new().parse(r"^aa").unwrap();
         let e3 = ExprBuilder::new().parse(r"^bb").unwrap();
 
-        assert!(branches_have_inter_tsets(&[&e1, &e2]));
-        assert!(!branches_have_inter_tsets(&[&e1, &e3]));
+        assert!(branches_have_inter_fsets(&[&e1, &e2]));
+        assert!(!branches_have_inter_fsets(&[&e1, &e3]));
     }
 }
