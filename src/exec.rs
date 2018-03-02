@@ -1240,6 +1240,11 @@ impl Exec {
         }
     }
 
+    /// Horrible hack to expose optimization telemetry
+    pub fn get_nfa(&self) -> &Program {
+        self.ro.get_nfa()
+    }
+
     /// True if the intersection of the two regex can't possibly accept.
     pub fn intersection_is_empty(lhs: &Self, rhs: &Self) -> bool {
         ExecReadOnly::intersection_is_empty(&lhs.ro, &rhs.ro)
@@ -1368,6 +1373,10 @@ impl ExecReadOnly {
             SkipMatchType::Auto => SkipMatchType::SkipBacktrack,
             m => m
         }
+    }
+
+    pub fn get_nfa(&self) -> &Program {
+        &self.nfa
     }
 
     /// Returns true if the program is amenable to suffix scanning.

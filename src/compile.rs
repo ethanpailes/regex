@@ -39,7 +39,7 @@ use prog::{
 
 use literals::{LiteralSearcher};
 
-use re_builder::{RegexOptions};
+use re_builder::{RegexOptions, SkipOptFlags};
 
 use Error;
 
@@ -56,6 +56,7 @@ struct Patch {
 pub struct Compiler {
     insts: Vec<MaybeInst<Inst, InstHole>>,
     skip_insts: Vec<MaybeInst<SkipInst, SkipInstHole>>,
+    skip_opts_used: SkipOptFlags,
     compiled: Program,
     capture_name_idx: HashMap<String, usize>,
     num_exprs: usize,
@@ -81,6 +82,7 @@ impl Compiler {
         Compiler {
             insts: vec![],
             skip_insts: vec![],
+            skip_opts_used: SkipOptFlags::all_false(),
             compiled: Program::new(),
             capture_name_idx: HashMap::new(),
             num_exprs: 0,
@@ -97,6 +99,7 @@ impl Compiler {
         let c = Compiler {
             insts: vec![],
             skip_insts: vec![],
+            skip_opts_used: SkipOptFlags::all_false(),
             compiled: Program::new(),
             capture_name_idx: HashMap::new(),
             num_exprs: self.num_exprs,
@@ -189,6 +192,7 @@ impl Compiler {
     }
 
     fn compile_one(mut self, expr: &Expr) -> result::Result<Program, Error> {
+        println!("expr={:?}", expr);
         // If we're compiling a forward DFA and we aren't anchored, then
         // add a `.*?` before the first capture group.
         // Other matching engines handle this by baking the logic into the
@@ -297,6 +301,7 @@ impl Compiler {
         self.compiled.byte_classes = self.byte_classes.byte_classes();
         self.compiled.capture_name_idx = Arc::new(self.capture_name_idx);
         self.compiled.has_skip_insts = self.options.skip_mode;
+        self.compiled.skip_opts_used = self.skip_opts_used;
         Ok(self.compiled)
     }
 
@@ -736,6 +741,7 @@ impl Compiler {
                 p = self.sc_continue(p, next);
             }
         } else {
+            self.skip_opts_used.skip_lit = true;
             // If we are in a NoBranch or NonIntersecting situation,
             // literals compile down to a skip (possibly with a test
             // for the first char).
@@ -1056,6 +1062,7 @@ impl Compiler {
         // The dotstar optimization
         if self.options.skip_flags.dotstar_term
             && es.iter().all(|e| self.expr_is_repeated_any(e)) {
+            self.skip_opts_used.dotstar_term = true;
             return Ok(ScanOptType::Dotstar(es, term))
         }
 
@@ -1063,6 +1070,7 @@ impl Compiler {
         if self.options.skip_flags.estar_term {
             let es_prog = try!(self.compile_es_prog(es));
             return Ok(if try!(self.lit_not_in_es(&es_prog, term)) {
+                self.skip_opts_used.estar_term = true;
                 ScanOptType::Estar(term)
             } else {
                 ScanOptType::NoScan
@@ -1174,7 +1182,7 @@ impl Compiler {
         use syntax::Expr::{Literal, Group};
 
         match e {
-            &Literal { chars: _, casei: _ } => true,
+            &Literal { chars: _, casei } => !casei,
             &Group { ref e, i: _, name: _ } => self.can_scan_to(&*e),
             _ => false,
         }
@@ -1222,9 +1230,11 @@ impl Compiler {
         use syntax::Expr::Group;
         trace!("::sc_literal_scan");
 
+        let none1 = None;
+        let none2 = None;
         let (capture_term, cap_idx, cap_name) = match term {
             &Group { e: _, ref i, ref name } => (true, i, name),
-            _ => (false, &None, &None)
+            _ => (false, &none1, &none2)
         };
 
         let lit = self.lit_of(term);

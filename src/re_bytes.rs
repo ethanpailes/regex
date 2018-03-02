@@ -21,6 +21,7 @@ use exec::{Exec, ExecNoSync};
 use expand::expand_bytes;
 use error::Error;
 use re_builder::bytes::RegexBuilder;
+pub use re_builder::SkipOptFlags;
 use re_trait::{self, RegularExpression, Locations, SubCapturesPosIter};
 
 /// Match represents a single match of a regex in a haystack.
@@ -140,6 +141,11 @@ impl Regex {
     /// ```
     pub fn is_match(&self, text: &[u8]) -> bool {
         self.is_match_at(text, 0)
+    }
+
+    /// Horrible hack to expose optimization telemetry
+    pub fn get_skip_opts_used(&self) -> &SkipOptFlags {
+        &self.0.get_nfa().skip_opts_used
     }
 
     /// Returns the start and end byte range of the leftmost-first match in

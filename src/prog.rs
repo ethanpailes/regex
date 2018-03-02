@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use input::Char;
 use literals::LiteralSearcher;
+use re_builder::SkipOptFlags;
 
 // Flip to true for debugging
 const TRACE: bool = false;
@@ -77,6 +78,8 @@ pub struct Program {
     pub prefixes: LiteralSearcher,
     /// True if the program has skip instructions.
     pub has_skip_insts: bool,
+    /// A set of flags indicating which optimizations were actually used.
+    pub skip_opts_used: SkipOptFlags,
     /// A limit on the size of the cache that the DFA is allowed to use while
     /// matching.
     ///
@@ -117,6 +120,7 @@ impl Program {
             has_unicode_word_boundary: false,
             prefixes: LiteralSearcher::empty(),
             has_skip_insts: false,
+            skip_opts_used: SkipOptFlags::all_false(),
             dfa_size_limit: 2 * (1<<20),
         }
     }

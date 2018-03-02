@@ -200,6 +200,20 @@ macro_rules! skip_test {
                 assert_eq!(b"test", &caps[1]);
             }
 
+            #[test]
+            fn skip_can_scan_to_casei_filtering_bug() {
+                let _re = regex(r"(?i).*/.*");
+            }
+
+
+            #[test]
+            fn failing () {
+                let _re = regex("(?: )(?: )");
+                assert!(false);
+                // let _re = regex("[\u{001b}\u{009b}][\\[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-PRZcf-nqry=><]");
+            }
+            
+
         }
     }
 }

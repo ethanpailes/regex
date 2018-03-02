@@ -1,0 +1,10 @@
+[package]
+name = "opt-telemetry"
+version = "0.1.0"
+authors = ["Ethan Pailes <ethanpailes@gmail.com>"]
+
+[dependencies]
+regex = { path = ".." }
+docopt = "0.8"
+serde = "1.0.27"
+serde_derive = "1.0.27"

@@ -66,7 +66,7 @@ cron_rs	0.1.6	r"^\s*((\*(/\d+)?)|[0-9-,/]+)(\s+((\*(/\d+)?)|[0-9-,/]+)){4,5}\s*$
 sysfs_gpio	0.5.1	r"^/sys/.*?/gpio/gpio(\d+)$"
 symbolic-debuginfo	2.0.7	"__?hidden#\\d+_"
 symbolic-minidump	2.0.7	r"^Linux ([^ ]+) (.*) \w+(?: GNU/Linux)?$"
-graphql-idl-parser	0.1.1	"^(?u:\"
+graphql-idl-parser	0.1.1	"^(?u:\""
 graphql-idl-parser	0.1.1	"^(?u:\\#)(?u:[\t-\r - \u{85}-\u{85}\u{a0}-\u{a0}\u{1680}-\u{1680}\u{2000}-\u{200a}\u{2028}-\u{2029}\u{202f}-\u{202f}\u{205f}-\u{205f}\u{3000}-\u{3000}])*(?u:.)+"
 graphql-idl-parser	0.1.1	"^(?u:=)(?u:[\t-\r - \u{85}-\u{85}\u{a0}-\u{a0}\u{1680}-\u{1680}\u{2000}-\u{200a}\u{2028}-\u{2029}\u{202f}-\u{202f}\u{205f}-\u{205f}\u{3000}-\u{3000}])*(?u:.)+"
 graphql-idl-parser	0.1.1	"^(?u:[A-Z_-_a-z])(?u:[0-9A-Z_-_a-z])*"

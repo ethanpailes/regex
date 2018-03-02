@@ -47,9 +47,13 @@ impl Default for RegexOptions {
 /// By default they are all on.
 #[derive(Clone, Debug)]
 pub struct SkipOptFlags {
+    /// perform the dotstar opt
     pub dotstar_term: bool,
+    /// perform the eterm opt
     pub estar_term: bool,
+    /// perform the skip_lit opt
     pub skip_lit: bool,
+    /// validate with a dfa before matching
     pub validate: bool,
 }
 
@@ -59,6 +63,18 @@ impl Default for SkipOptFlags {
             dotstar_term: true,
             estar_term: true,
             skip_lit: true,
+            validate: false,
+        }
+    }
+}
+
+impl SkipOptFlags {
+    /// A set of flags that are all false
+    pub fn all_false() -> Self {
+        SkipOptFlags {
+            dotstar_term: false,
+            estar_term: false,
+            skip_lit: false,
             validate: false,
         }
     }
