@@ -192,7 +192,7 @@ impl Compiler {
     }
 
     fn compile_one(mut self, expr: &Expr) -> result::Result<Program, Error> {
-        println!("expr={:?}", expr);
+        // println!("expr={:?}", expr);
         // If we're compiling a forward DFA and we aren't anchored, then
         // add a `.*?` before the first capture group.
         // Other matching engines handle this by baking the logic into the

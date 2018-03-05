@@ -8,9 +8,8 @@ mod util;
 use re_vec::re_vec;
 
 fn main() {
-    println!("PING");
     let mut no_lines = 0;
-    let mut dot_star = 0;
+    let mut dotstar = 0;
     let mut elit = 0;
     let mut skip_lit = 0;
 
@@ -21,7 +20,7 @@ fn main() {
             .unwrap_or(SkipOptFlags::all_false());
 
         if re_opts.dotstar_term {
-            dot_star += 1;
+            dotstar += 1;
         }
         if re_opts.estar_term {
             elit += 1;
@@ -30,8 +29,12 @@ fn main() {
             skip_lit += 1;
         }
 
-        println!(
-            "{} dotstar opts, {} elit opts, and {} skip_lit opts for {} lines.",
-                    dot_star, elit, skip_lit, no_lines);
     }
+
+    let p = |x| ((x as f64) / (no_lines as f64)) * 100.0;
+
+    println!("{} total regex checked", no_lines);
+    println!("{} ({} %) dotstar opts", dotstar, p(dotstar));
+    println!("{} ({} %) eterm opts", elit, p(elit));
+    println!("{} ({} %) skip_lit opts", skip_lit, p(skip_lit));
 }
