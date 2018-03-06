@@ -205,14 +205,17 @@ macro_rules! skip_test {
                 let _re = regex(r"(?i).*/.*");
             }
 
+            #[test]
+            fn skip_alternate_terminator() {
+                let re = regex(r"a*(foo|bar)");
+                let caps = re.captures(b"aaaaaaaafoo").unwrap();
+                assert_eq!(b"foo", &caps[1]);
+            }
 
             #[test]
-            fn failing () {
-                let _re = regex("(?: )(?: )");
-                assert!(false);
-                // let _re = regex("[\u{001b}\u{009b}][\\[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-PRZcf-nqry=><]");
+            fn skip_idx_unwrapping_compiler_bug() {
+                let _re = regex(r"(?:Chrome|CrMo|CriOS)/([.0-9]+)");
             }
-            
 
         }
     }

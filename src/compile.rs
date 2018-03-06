@@ -1179,18 +1179,20 @@ impl Compiler {
     /// but once we bring Aho-Corasick online for scanning it will also
     /// match groups of literals and captured groups of literals.
     fn can_scan_to(&self, e: &Expr) -> bool {
-        use syntax::Expr::{Literal, Group};
+        use syntax::Expr::{Literal, Group, Alternate};
 
         match e {
             &Literal { chars: _, casei } => !casei,
             &Group { ref e, i: _, name: _ } => self.can_scan_to(&*e),
+            &Alternate( ref es ) =>
+                es.iter().all(|e| self.can_scan_to(e)),
             _ => false,
         }
     }
 
     /// Get a literal suitable for scanning to from an expression
     fn lit_of(&self, e: &Expr) -> Literals {
-        use syntax::Expr::{Literal, Group};
+        use syntax::Expr::{Literal, Group, Alternate};
         debug_assert!(self.can_scan_to(e));
 
         match e {
@@ -1205,6 +1207,25 @@ impl Compiler {
                 lits
             }
             &Group { ref e, i: _, name: _ } => self.lit_of(&*e),
+            &Alternate( ref es ) => {
+                // We know that `self.can_scan_to(e)`, so es is
+                // a list of expressions composed entirely of literals,
+                // alternates, and groups.
+                let mut lits: Vec<Vec<u8>> = vec![];
+                {
+                    let mut lit_acc = LiteralAccumulatorVisitor(&mut lits);
+                    for e in es {
+                        lit_acc.accumulate(e);
+                    }
+                }
+
+                let mut lit_searcher = Literals::empty();
+                for lit in lits.into_iter() {
+                    lit_searcher.add(Lit::new(lit));
+                }
+
+                lit_searcher
+            }
             _ => unreachable!("no lit for {:?}", e),
         }
     }
@@ -1230,11 +1251,15 @@ impl Compiler {
         use syntax::Expr::Group;
         trace!("::sc_literal_scan");
 
-        let none1 = None;
-        let none2 = None;
+        let none = None;
         let (capture_term, cap_idx, cap_name) = match term {
-            &Group { e: _, ref i, ref name } => (true, i, name),
-            _ => (false, &none1, &none2)
+            &Group { e: _, ref i, ref name } => {
+                match i {
+                    &Some(ix) => (true, ix, name),
+                    &None => (false, 0xdeadbeef, &none),
+                }
+            },
+            _ => (false, 0xbabecafe, &none)
         };
 
         let lit = self.lit_of(term);
@@ -1261,8 +1286,6 @@ impl Compiler {
         }
 
         if capture_term {
-            let cap_idx = cap_idx.unwrap();
-
             if cap_idx >= self.compiled.captures.len() {
                 self.compiled.captures.push(cap_name.clone());
                 if let Some(ref name) = *cap_name {
@@ -2478,6 +2501,29 @@ impl SyntaxVisitor for ContainsCaptureVisitor {
     fn visit_expr(&mut self, expr: &Expr) {
         match expr {
             &Expr::Group { e: _, i: _, name: _ } => self.0 = true,
+            e => e.visit_children(self),
+        }
+    }
+}
+
+struct LiteralAccumulatorVisitor<'a>(&'a mut Vec<Vec<u8>>);
+impl<'a> LiteralAccumulatorVisitor<'a> {
+    fn accumulate(&mut self, expr: &Expr) {
+        expr.visit_node(self);
+    }
+}
+
+impl<'a> SyntaxVisitor for LiteralAccumulatorVisitor<'a> {
+    fn visit_expr(&mut self, expr: &Expr) {
+        match expr {
+            &Expr::Literal { ref chars, casei } => {
+                if casei {
+                    unreachable!("LiteralAccumulatorVisitor used on casei expr");
+                }
+
+                self.0.push(chars.into_iter().collect::<String>()
+                                .as_bytes().to_vec());
+            }
             e => e.visit_children(self),
         }
     }
