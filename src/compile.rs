@@ -34,7 +34,8 @@ use utf8_ranges::{Utf8Range, Utf8Sequence, Utf8Sequences};
 use prog::{
     Program, Inst, InstPtr, EmptyLook,
     InstSave, InstSplit, InstEmptyLook, InstChar, InstRanges, InstBytes,
-    SkipInst, RUN_QUEUE_RING_SIZE, InstScanLiteral, InstByte, InstSkip
+    SkipInst, RUN_QUEUE_RING_SIZE, InstScanLiteral, InstByte, InstSkip,
+    InstScanEnd
 };
 
 use literals::{LiteralSearcher};
@@ -905,6 +906,9 @@ impl Compiler {
     ) -> Result {
         trace!("::sc_concat");
 
+        let mut new_ctx = ctx;
+        new_ctx.is_final_expression = false;
+
         // we don't have to do any skip fusion here because the
         // literal parser has already done that for us.
         let mut p = Patch { hole: Hole::None, entry: self.sc_next() };
@@ -923,11 +927,11 @@ impl Compiler {
                     if opt != ScanOptType::NoScan {
                         // Recursivly compile the front bit
                         let next =
-                            try!(self.sc_concat(ctx, &exprs[0..es_start]));
+                            try!(self.sc_concat(new_ctx, &exprs[0..es_start]));
                         p = self.sc_continue(p, next);
 
                         // Now the actual optimizeable bit
-                        let next = try!(opt.compile(self, ctx));
+                        let next = try!(opt.compile(self, new_ctx));
                         p = self.sc_continue(p, next);
 
                         noopt_start = es_end + 1;
@@ -951,13 +955,16 @@ impl Compiler {
     /// Compile a concatination with no optimization shennanigans.
     ///
     /// This method is still fairly complex in order to do the right
-    /// thing around branch position.
+    /// thing around branch position and the final expression flag.
     fn sc_concat_noopt(
         &mut self,
         ctx: SkipCompilerContext,
         es: &[&Expr]
     ) -> Result {
         let mut p = Patch { hole: Hole::None, entry: self.sc_next() };
+
+        let mut new_ctx = ctx;
+        new_ctx.is_final_expression = false;
 
         // short circut base case
         if es.len() == 0 {
@@ -966,8 +973,12 @@ impl Compiler {
 
         let mut repeats = vec![];
         let mut repeat_inners = vec![];
-        for e in es {
+        for (expr_idx, e) in es.iter().enumerate() {
             debug_assert!(repeats.len() == repeat_inners.len());
+
+            if ctx.is_final_expression && expr_idx == es.len() - 1 {
+                new_ctx.is_final_expression = true;
+            }
 
             match self.repeat_inner(e) {
                 Some(i) => {
@@ -979,8 +990,8 @@ impl Compiler {
                         // determine what sort of branch we are dealing
                         // with here
                         repeat_inners.push(e);
-                        let mut new_ctx = ctx;
-                        new_ctx.branch_type = ctx.branch_type.try_promote(
+                        let mut branch_ctx = new_ctx;
+                        branch_ctx.branch_type = new_ctx.branch_type.try_promote(
                             if branches_have_inter_fsets(&repeat_inners) {
                                 BranchType::Intersecting
                             } else {
@@ -989,18 +1000,18 @@ impl Compiler {
 
                         // drain the backlog in appropriate style
                         for r in &repeats {
-                            let next = try!(self.sc(new_ctx, r));
+                            let next = try!(self.sc(branch_ctx, r));
                             p = self.sc_continue(p, next);
                         }
 
                         // compile the next in appropriate style
-                        let next = try!(self.sc(new_ctx, e));
+                        let next = try!(self.sc(branch_ctx, e));
                         p = self.sc_continue(p, next);
 
                         repeats.clear();
                         repeat_inners.clear();
                     } else {
-                        let next = try!(self.sc(ctx, e));
+                        let next = try!(self.sc(new_ctx, e));
                         p = self.sc_continue(p, next);
                     }
                 }
@@ -1011,8 +1022,8 @@ impl Compiler {
 
         if repeats.len() > 0 {
             // now drain the remaining repeats
-            let mut new_ctx = ctx;
-            new_ctx.branch_type = ctx.branch_type.try_promote(
+            let mut branch_ctx = new_ctx;
+            branch_ctx.branch_type = new_ctx.branch_type.try_promote(
                 if branches_have_inter_fsets(&repeat_inners) {
                     BranchType::Intersecting
                 } else {
@@ -1021,7 +1032,7 @@ impl Compiler {
 
             // drain the backlog in appropriate style
             for r in &repeats {
-                let next = try!(self.sc(new_ctx, r));
+                let next = try!(self.sc(branch_ctx, r));
                 p = self.sc_continue(p, next);
             }
         }
@@ -1112,29 +1123,6 @@ impl Compiler {
         }
     }
 
-    /// Given a list of repetition expressions, compile its program.
-    ///
-    /// If `repeats` == /.*/, we return None. This repetition is special
-    /// because we wrap the literals in dotstars when checking intersection,
-    /// so we need to avoid an infinite recursion.
-    /* TODO: delete
-    fn compile_repeats_prog(
-        &self,
-        repeats: &[&Expr]
-    ) -> result::Result<Option<Program>, Error> {
-        use syntax::Expr::{Concat};
-
-        if repeats.len() == 1 && self.expr_is_repeated_any(repeats[0]) {
-            return Ok(None);
-        }
-
-        self.copy_config()
-            .compile_one(&Concat(repeats.iter()
-                .map(|x| (**x).clone())
-                .collect())).map(Some)
-    }
-    */
-
     /// Given a list of expressions, compile its program.
     ///
     /// If `es` == /.*/, we return None. This expression is special
@@ -1161,17 +1149,26 @@ impl Compiler {
     /// A predicate to test if an expression is a repetition of
     /// AnyChar (/.*/, /.+/, /.*?/, /.+?/).
     fn expr_is_repeated_any(&self, e: &Expr) -> bool {
-        use syntax::Expr::{Repeat, AnyChar, AnyCharNoNL, AnyByte, AnyByteNoNL};
+        use syntax::Expr::Repeat;
         use syntax::Repeater::{ZeroOrMore, OneOrMore};
 
         match e {
             &Repeat { e: ref inner, r, greedy: _ }
-                if (**inner == AnyChar || **inner == AnyCharNoNL
-                    || **inner == AnyByte || **inner == AnyByteNoNL)
+                if self.expr_is_any(&**inner)
                   && (r == ZeroOrMore || r == OneOrMore) => true,
             _ => false,
         }
     }
+
+    fn expr_is_any(&self, e: &Expr) -> bool {
+        use syntax::Expr::{AnyChar, AnyCharNoNL, AnyByte, AnyByteNoNL};
+
+        match e {
+            &AnyChar | &AnyByte | &AnyCharNoNL | &AnyByteNoNL => true,
+            _ => false
+        }
+    }
+
 
     /// A predicate to test if we can scan to an expression.
     ///
@@ -1426,15 +1423,21 @@ impl Compiler {
         greedy: bool,
     ) -> Result {
         trace!("::sc_repeat");
-        match kind {
-            Repeater::ZeroOrOne => self.sc_repeat_zero_or_one(ctx, expr, greedy),
-            Repeater::ZeroOrMore => self.sc_repeat_zero_or_more(ctx, expr, greedy),
-            Repeater::OneOrMore => self.sc_repeat_one_or_more(ctx, expr, greedy),
-            Repeater::Range { min, max: None } => {
-                self.sc_repeat_range_min_or_more(ctx, expr, greedy, min)
-            }
-            Repeater::Range { min, max: Some(max) } => {
-                self.sc_repeat_range(ctx, expr, greedy, min, max)
+
+        if ctx.is_final_expression && self.expr_is_any(expr) {
+            Ok(self.sc_push_one(SkipInstHole::ScanEnd))
+        } else {
+            match kind {
+                Repeater::ZeroOrOne =>
+                    self.sc_repeat_zero_or_one(ctx, expr, greedy),
+                Repeater::ZeroOrMore =>
+                    self.sc_repeat_zero_or_more(ctx, expr, greedy),
+                Repeater::OneOrMore =>
+                    self.sc_repeat_one_or_more(ctx, expr, greedy),
+                Repeater::Range { min, max: None } =>
+                    self.sc_repeat_range_min_or_more(ctx, expr, greedy, min),
+                Repeater::Range { min, max: Some(max) } =>
+                    self.sc_repeat_range(ctx, expr, greedy, min, max),
             }
         }
     }
@@ -1972,10 +1975,16 @@ impl<'a> ScanOptType<'a> {
 #[derive(Debug, Copy, Clone)]
 struct SkipCompilerContext {
     branch_type: BranchType,
+    /// We include this flag in order to facilitate compiling
+    /// any trailing .* or .*? to just `scan-end`. This optimization
+    /// might seem uncommon, but it makes the `branch1|branch2|branch3|.*`
+    /// pattern faster, which is quite importaint for data banging.
+    is_final_expression: bool,
 }
 
 const INIT_SC_CTX: SkipCompilerContext = SkipCompilerContext {
-    branch_type: BranchType::NoBranch
+    branch_type: BranchType::NoBranch,
+    is_final_expression: true,
 };
 
 /// A flag to indicate the branch context of the current compilation.
@@ -2206,6 +2215,7 @@ enum SkipInstHole {
     Skip { skip: usize },
     ScanLiteral { literal: LiteralSearcher, start: bool },
     EmptyLook { look: EmptyLook },
+    ScanEnd,
 }
 
 impl FillTo<SkipInst> for SkipInstHole {
@@ -2240,6 +2250,10 @@ impl FillTo<SkipInst> for SkipInstHole {
                 SkipInst::SkipEmptyLook(InstEmptyLook {
                     goto: goto,
                     look: look
+                }),
+            SkipInstHole::ScanEnd =>
+                SkipInst::SkipScanEnd(InstScanEnd {
+                    goto: goto
                 }),
         }
     }

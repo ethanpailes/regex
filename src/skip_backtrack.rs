@@ -316,6 +316,10 @@ impl<'a, 'r, 's, I: Input> Bounded<'a, 'r, 's, I> {
                         return false;
                     };
                 }
+                SkipScanEnd(ref inst) => {
+                    ip = inst.goto;
+                    sp = input.len();
+                }
             }
         }
     }

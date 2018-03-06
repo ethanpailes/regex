@@ -371,6 +371,11 @@ impl Program {
                     try!(write!(f, "{:04} {}", pc,
                                 Self::fmt_with_goto(pc, inst.goto, s)));
                 }
+                SkipScanEnd(ref inst) => {
+                    try!(write!(f, "{:04} {}", pc,
+                                Self::fmt_with_goto(
+                                pc, inst.goto, "ScanEnd".to_string())));
+                }
             }
 
             if pc == self.start {
@@ -855,6 +860,10 @@ pub enum SkipInst {
     /// is meant as an optimization to speed up kleene star (especially
     /// dotstars).
     SkipScanLiteral(InstScanLiteral),
+
+    /// SkipScanEnd tells the regex engine to just move the string
+    /// pointer to the end of the input.
+    SkipScanEnd(InstScanEnd),
 }
 
 /// Representation of the SkipByte instruction.
@@ -891,6 +900,14 @@ pub struct InstScanLiteral {
     /// allows us to handle the case where a terminating literal set
     /// is enclosed in a capture group.
     pub start: bool,
+}
+
+/// Representation of the InstScanEnd instruction.
+#[derive(Clone, Debug)]
+pub struct InstScanEnd {
+    /// The next location to execute in the program if this instruction
+    /// succeeds.
+    pub goto: InstPtr,
 }
 
 

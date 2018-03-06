@@ -396,6 +396,26 @@ impl<'r, I: Input> Fsm<'r, I> {
 
                         false
                     }
+                    SkipScanEnd(ref inst) => {
+                        // how far do we want to go?
+                        let new_sp = match self.literal_scan_table[ip] {
+                            Some(nsp) => nsp,
+                            None => self.input.as_bytes().len(),
+                        };
+
+                        // how far can we actually go?
+                        let tgt_sp = if new_sp - sp >= RUN_QUEUE_RING_SIZE {
+                            self.literal_scan_table[ip] = Some(new_sp);
+                            sp + (RUN_QUEUE_RING_SIZE - 1)
+                        } else {
+                            self.literal_scan_table[ip] = None;
+                            new_sp
+                        };
+
+                        self.add(run_queue, ip, inst.goto, tgt_sp);
+
+                        false
+                    }
                     ref inst => unreachable!("unhandled inst: {:?}", inst),
                 }
             }
@@ -482,8 +502,9 @@ impl<'r, I: Input> Fsm<'r, I> {
                 }
 
                 // terminal instructions
-                SkipScanLiteral(_) | SkipMatch(_) | SkipEmptyLook(_) |
-                SkipByte(_) | SkipBytes(_) | SkipSkip(_) => {
+                SkipScanEnd(_) | SkipScanLiteral(_) | SkipMatch(_)
+                | SkipEmptyLook(_) | SkipByte(_) | SkipBytes(_)
+                | SkipSkip(_) => {
                     trace!(
                         "add_step: (ip_caps={} ip={} sp={}) adding leaf thread",
                         ip_caps, ip, sp);

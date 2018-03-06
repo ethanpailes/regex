@@ -217,6 +217,21 @@ macro_rules! skip_test {
                 let _re = regex(r"(?:Chrome|CrMo|CriOS)/([.0-9]+)");
             }
 
+            #[test]
+            fn skip_trailing_dotstar_nocap() {
+                let re = regex(r"blah(foo|bar)a[0-9].*");
+                let caps = re.captures(b"blahbara4restof it").unwrap();
+                assert_eq!(b"bar", &caps[1]);
+            }
+
+            #[test]
+            fn skip_trailing_dotstar_cap() {
+                let re = regex(r"blah(foo|bar)a[0-9](.*)");
+                let caps = re.captures(b"blahbara4restof it").unwrap();
+                assert_eq!(b"bar", &caps[1]);
+                assert_eq!(b"restof it", &caps[2]);
+            }
+
         }
     }
 }
