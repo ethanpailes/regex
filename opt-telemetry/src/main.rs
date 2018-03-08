@@ -1,7 +1,5 @@
 extern crate regex;
 
-use regex::bytes::SkipOptFlags;
-
 mod re_vec;
 mod util;
 
@@ -14,10 +12,15 @@ fn main() {
     let mut skip_lit = 0;
 
     for re in re_vec().into_iter() {
-        no_lines += 1;
 
-        let re_opts = re.map(|r| r.get_skip_opts_used().clone())
-            .unwrap_or(SkipOptFlags::all_false());
+        let re_opts = match re {
+            Ok(r) => r.get_skip_opts_used().clone(),
+
+            // don't even count this line
+            Err(_) => continue,
+        };
+
+        no_lines += 1;
 
         if re_opts.dotstar_term {
             dotstar += 1;

@@ -629,6 +629,9 @@ impl Compiler {
     ) -> Result {
         trace!("::sc_literal chars={:?}", chars);
         // TODO(ethan):casei does not support case insensitivity
+        if casei {
+            return Err(Error::SkipUnsupported("casei".to_string()));
+        }
 
         let bytes = chars.into_iter().map(|c| {
             if c.is_ascii() {
@@ -724,10 +727,14 @@ impl Compiler {
         &mut self,
         ctx: SkipCompilerContext,
         bytes: &[u8],
-        _casei: bool,
+        casei: bool,
     ) -> Result {
         trace!("::sc_bytes chars={:?}", bytes);
         // TODO(ethan):casei does not support case insensitivity
+        if casei {
+            return Err(Error::SkipUnsupported("casei".to_string()));
+        }
+
 
         let max_skip = RUN_QUEUE_RING_SIZE - 1;
 
