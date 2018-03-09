@@ -735,7 +735,6 @@ impl Compiler {
             return Err(Error::SkipUnsupported("casei".to_string()));
         }
 
-
         let max_skip = RUN_QUEUE_RING_SIZE - 1;
 
         let mut p = Patch { hole: Hole::None, entry: self.sc_next() };
@@ -913,6 +912,12 @@ impl Compiler {
     ) -> Result {
         trace!("::sc_concat");
 
+        // Maintain the invariant that we are dealing with a real
+        // concatination.
+        if exprs.len() == 1 {
+            return self.sc(ctx, exprs[0]);
+        }
+
         let mut new_ctx = ctx;
         new_ctx.is_final_expression = false;
 
@@ -983,10 +988,6 @@ impl Compiler {
         for (expr_idx, e) in es.iter().enumerate() {
             debug_assert!(repeats.len() == repeat_inners.len());
 
-            if ctx.is_final_expression && expr_idx == es.len() - 1 {
-                new_ctx.is_final_expression = true;
-            }
-
             match self.repeat_inner(e) {
                 Some(i) => {
                     repeats.push(e);
@@ -1011,6 +1012,9 @@ impl Compiler {
                             p = self.sc_continue(p, next);
                         }
 
+                        if ctx.is_final_expression && expr_idx == es.len() - 1 {
+                            branch_ctx.is_final_expression = true;
+                        }
                         // compile the next in appropriate style
                         let next = try!(self.sc(branch_ctx, e));
                         p = self.sc_continue(p, next);
@@ -1038,7 +1042,10 @@ impl Compiler {
                 });
 
             // drain the backlog in appropriate style
-            for r in &repeats {
+            for (r_idx, r) in repeats.iter().enumerate() {
+                if ctx.is_final_expression && r_idx == repeats.len() - 1 {
+                    branch_ctx.is_final_expression = true;
+                }
                 let next = try!(self.sc(branch_ctx, r));
                 p = self.sc_continue(p, next);
             }

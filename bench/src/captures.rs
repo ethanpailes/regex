@@ -321,88 +321,81 @@ macro_rules! regex {
 // this guy is just here to knock the ice off the cache when
 // running the capture benchmarks using the `cap_` benchmark
 // filter (`bench/run rust-bytes cap_`).
-bench_captures!(cap_aaaaaaaa, regex!("aaaa(bbbb)cccc"), 1,
-                String::from("aaaabbbbcccc"));
-
-// expectation: moderate win for skipping
-bench_captures!(cap_small, regex!("aaaa(bbbb)cccc"), 1,
-                String::from("aaaabbbbcccc"));
+bench_captures!(cap_aaaaaaaa, 1,
+                |_| regex!(r"aaaa(bbbb)cccc"),
+                |_| String::from("aaaabbbbcccc"));
 
 // This is the strong point for skip regex. If we don't win here,
 // something is seriously wrong.
 //
 // expectation: major iwn for skipping.
-bench_captures!(cap_large,
-    regex!(format!("{}(bbbb){}",
-        repeat("aaaa").take(100).collect::<String>(),
-        repeat("cccc").take(100).collect::<String>()).as_str()),
-    1,
-    format!("{}bbbb{}",
-        repeat("aaaa").take(100).collect::<String>(),
-        repeat("cccc").take(100).collect::<String>()));
+bench_captures!(cap_middle, 1,
+    |scale| 
+        regex!(format!(r"{}(bbbb){}",
+            repeat("aaaa").take(scale).collect::<String>(),
+            repeat("cccc").take(scale).collect::<String>()).as_str()),
+    |scale| format!("{}bbbb{}",
+                repeat("aaaa").take(scale).collect::<String>(),
+                repeat("cccc").take(scale).collect::<String>()));
 
 // I think this guy is a more promising optimization.
 //
 // expectation: major win for ND scanning
-bench_captures!(cap_leading_dotstar,
-    regex!(".*(aaaa)"),
-    1,
-    format!("{}aaaa", repeat("b").take(1000).collect::<String>()));
+bench_captures!(cap_leading_dotstar, 1,
+    |_| regex!(r".*(aaaa)"),
+    |scale| format!("{}aaaa", repeat("b").take(scale).collect::<String>()));
 
-// TODO: issue 8
 // expectation: major win for direct scanning
-bench_captures!(cap_leading_noncontaining_estar,
-    regex!("a*because(why)not"),
-    1,
-    format!("{}becausewhynot", repeat("a").take(1000).collect::<String>()));
+bench_captures!(cap_leading_noncontaining_estar, 1,
+    |_| regex!(r"a*because(why)not"),
+    |scale| format!("{}becausewhynot",
+                repeat("a").take(scale).collect::<String>()));
 
-// TODO: issue 9
 // expectation: modest win for skipping
-bench_captures!(cap_repeated_alternates,
-    regex!("(?:a|b)(?:c|d)(?:e|f)(?:g|h)(?:i|j)(?:k|l)(?:m|n)(?:o|p)(zz)"),
-    1,
-    "adehilmpzz".to_string());
+bench_captures!(cap_repeated_alternates, 1,
+    |_| regex!(r"(?:a|b)(?:c|d)(?:e|f)(?:g|h)(?:i|j)(?:k|l)(?:m|n)(?:o|p)(zz)"),
+    |_| "adehilmpzz".to_string());
 
-/*
 // The goal here is to blow up the bitset on the bounded backtracker
 // and make it perform poorly. The bitset usage is (regex-size * input-size),
 // so a bigger regex really helps. We also use a repetition that can't
 // be optimized.
 //
-// TODO: issue 11 
 // expectation: modest win for skipping
-bench_captures!(cap_really_big_noscan,
-    regex!("a*(a|b|c|d|e|f|h|i|j|k|l|m|n|o|p|q|r|s|t|u|v)(?:w)y{1}x{2}z{3}"),
-    1,
-    format!("{}awyxxzzz", repeat("a").take(100000).collect::<String>()));
-*/
+bench_captures!(cap_really_big_noscan, 1,
+    |_| regex!(r"a*(a|b|c|d|e|f|h|i|j|k|l|m|n|o|p|q|r|s|t|u|v)(?:w)y{1}x{2}z{3}"),
+    |scale| format!("{}awyxxzzz", repeat("a").take(scale).collect::<String>()));
 
 // The goal here is to see what happens for a pathological case.
 //
 // expectation: The backtracker won't do well (but the bounded backtracker
 // should do fine).
-bench_captures!(cap_pathological,
-    regex!("(a?a?a?a?a?a?a?a?a?a?)aaaaaaaaaa"),
-    1,
-    "aaaaaaaaaa".to_string());
+// bench_captures!(cap_pathological, 1,
+//     |scale| regex!(format!(r"({}){}",
+//                 repeat("a?").take(scale).collect::<String>(),
+//                 repeat("a").take(scale).collect::<String>()).as_str()),
+//     |scale| repeat("a").take(scale).collect::<String>());
 
 // Is this faster for the PikeVM than the backtracker because the
 // PikeVM is breadth-first while the backtracker is depth-first?
-bench_captures!( cap_quad_scan, regex!("(?:.*z|([az]*))b"), 1,
-    format!("{}zab",
-        repeat("a").take(10000).collect::<String>()));
+bench_captures!(cap_quad_scan, 1,
+    |_| regex!("(?:.*z|([az]*))b"),
+    |scale| format!("{}zab", repeat("a").take(scale).collect::<String>()));
 
-bench_captures!(cap_first, regex!("(aaaa)(bbbbbb)*"), 2,
-    format!("aaaa{}", repeat("bbbbbb").take(100).collect::<String>()));
+bench_captures!(cap_first, 2,
+    |_| regex!("(aaaa)(bbbbbb)*"),
+    |scale| format!("aaaa{}", repeat("bbbbbb").take(scale).collect::<String>()));
 
 // This guy is here to test my hypothesis that we are seeing a big
 // win for skipping just because it lets us cut down on memory traffic
 //
 // expectation: very small win for skipping.
-bench_captures!(cap_justone, regex!("(a)"), 1, "a".to_string());
+bench_captures!(cap_justone, 1, |_| regex!("(a)"), |_| "a".to_string());
 
 // The intersecting branches here should force the skip compiler
 // to emit code that is pretty equivalent to the standard engine.
 //
 // expectation: very similar perf
-bench_captures!(cap_justtwo_branch, regex!("(ab|ac)"), 1, "ab".to_string());
+bench_captures!(cap_justtwo_branch, 1,
+    |_| regex!("(ab|ac)"),
+    |_| "ab".to_string());

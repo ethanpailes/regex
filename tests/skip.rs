@@ -201,11 +201,6 @@ macro_rules! skip_test {
             }
 
             #[test]
-            fn skip_can_scan_to_casei_filtering_bug() {
-                let _re = regex(r"(?i).*/.*");
-            }
-
-            #[test]
             fn skip_alternate_terminator() {
                 let re = regex(r"a*(foo|bar)");
                 let caps = re.captures(b"aaaaaaaafoo").unwrap();
@@ -230,6 +225,13 @@ macro_rules! skip_test {
                 let caps = re.captures(b"blahbara4restof it").unwrap();
                 assert_eq!(b"bar", &caps[1]);
                 assert_eq!(b"restof it", &caps[2]);
+            }
+
+            #[test]
+            fn skip_singleton_concat_literal_bug() {
+                let re = regex(r"(a|b)y{1}");
+                let caps = re.captures(b"ay").unwrap();
+                assert_eq!(b"a", &caps[1]);
             }
 
         }

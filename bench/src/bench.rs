@@ -252,16 +252,23 @@ macro_rules! bench_find {
 //   bench_captures will benchmark how fast re.captures() produces
 //   the capture groups in question.
 macro_rules! bench_captures {
-    ($name:ident, $pattern:expr, $count:expr, $haystack:expr) => {
+    ($name:ident, $count:expr, $build_re:expr, $build_haystack:expr) => {
 
         #[cfg(feature = "re-rust-bytes")]
         #[bench]
         fn $name(b: &mut Bencher) {
             use std::sync::Mutex;
+            use std;
 
             lazy_static! {
-                static ref RE: Mutex<Regex> = Mutex::new($pattern);
-                static ref TEXT: Mutex<Text> = Mutex::new(text!($haystack));
+                static ref SCALING_FACTOR: usize =
+                    std::env::var("SKIP_RE_BENCH_SCALE").ok()
+                        .and_then(|s| s.parse::<usize>().ok())
+                        .unwrap_or(100);
+                static ref RE: Mutex<Regex> =
+                    Mutex::new($build_re(*SCALING_FACTOR));
+                static ref TEXT: Mutex<Text> =
+                    Mutex::new(text!($build_haystack(*SCALING_FACTOR)));
             };
             let re = RE.lock().unwrap();
             let text = TEXT.lock().unwrap();

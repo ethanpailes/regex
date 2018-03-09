@@ -467,7 +467,7 @@ impl<'c> RegularExpression for ExecNoSync<'c> {
             return None;
         }
 
-        if self.ro.skip_match_type == SkipMatchType::NoSkip {
+        if self.ro.skip_match_type != SkipMatchType::NoSkip {
             unreachable!("unimpl");
         }
 
