@@ -396,7 +396,7 @@ impl<'r, I: Input> Fsm<'r, I> {
 
                         false
                     }
-                    SkipScanEnd(ref inst) => {
+                    SkipGotoEnd(ref inst) => {
                         // how far do we want to go?
                         let new_sp = match self.literal_scan_table[ip] {
                             Some(nsp) => nsp,
@@ -502,7 +502,7 @@ impl<'r, I: Input> Fsm<'r, I> {
                 }
 
                 // terminal instructions
-                SkipScanEnd(_) | SkipScanLiteral(_) | SkipMatch(_)
+                SkipGotoEnd(_) | SkipScanLiteral(_) | SkipMatch(_)
                 | SkipEmptyLook(_) | SkipByte(_) | SkipBytes(_)
                 | SkipSkip(_) => {
                     trace!(

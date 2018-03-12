@@ -12,16 +12,6 @@ FEATURES=(
 
 SCALING_FACTORS=(
   "10"
-  "50"
-  "100"
-  "200"
-  "300"
-  "400"
-  "500"
-  "600"
-  "700"
-  "800"
-  "900"
   "1000"
   "2000"
   "3000"
@@ -32,6 +22,11 @@ SCALING_FACTORS=(
   "8000"
   "9000"
   "10000"
+  "11000"
+  "12000"
+  "13000"
+  "14000"
+  "15000"
 )
 
 if [ -z ${1+x} ]; then
@@ -52,8 +47,8 @@ do
   do
     echo ">>> scaling_factor=${scaling_factor}"
 
-    SKIP_RE_BENCH_SCALE=${scaling_factor} |\
-    cargo bench --bench bench --features ${feature} ${FILTER} |\
+    SKIP_RE_BENCH_SCALE=${scaling_factor} \
+      cargo bench --bench bench --features ${feature} ${FILTER} |\
       tee ${scaling_factor}-${feature}.bench
   done
 done
@@ -62,7 +57,7 @@ echo "POST BENCHMARK DATA MUNGING"
 for scaling_factor in ${SCALING_FACTORS[@]}
 do
   echo ">>> scaling_factor=${scaling_factor}"
-  echo -n "converting the results to csv format..."
+  echo -n "converting the results to csv format...  "
   for feature in ${FEATURES[@]}
   do
     csv_file="${scaling_factor}-${feature}.bench.csv"
@@ -76,7 +71,10 @@ do
   done
   echo "[ OK ]"
 
-  echo -n "joining the csv files..."
+  # I realized that this is bad relational thinking after I wrote the
+  # script. I really should have just put the feature in a column.
+  # Sorry :(.
+  echo -n "joining the csv files...  "
   rollup_csv_file=${scaling_factor}.bench.csv
   cp ${scaling_factor}-${FEATURES[0]}.bench.csv ${rollup_csv_file}
   for feature in ${FEATURES[@]:1}
@@ -92,4 +90,4 @@ do
 
 done
 
-# python3 graph-sfs.py ${SCALING_FACTORS}
+python3 graph-sfs.py ${SCALING_FACTORS}

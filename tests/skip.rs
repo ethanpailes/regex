@@ -234,6 +234,14 @@ macro_rules! skip_test {
                 assert_eq!(b"a", &caps[1]);
             }
 
+            #[test]
+            fn skip_branch_type_scan_bug() {
+                let re = regex(r"b*foo(.)|ab*foo(.)");
+                let caps = re.captures(b"afoox").unwrap();
+                assert_eq!(b"x", &caps[2]);
+                assert_eq!(None, caps.get(1));
+            }
+
         }
     }
 }

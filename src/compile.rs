@@ -14,7 +14,7 @@ use std::result;
 use std::sync::Arc;
 
 // Flip to true for debugging
-const TRACE: bool = false;
+const TRACE: bool = true;
 macro_rules! trace {
     ($($tts:tt)*) => {
         if TRACE {
@@ -35,7 +35,7 @@ use prog::{
     Program, Inst, InstPtr, EmptyLook,
     InstSave, InstSplit, InstEmptyLook, InstChar, InstRanges, InstBytes,
     SkipInst, RUN_QUEUE_RING_SIZE, InstScanLiteral, InstByte, InstSkip,
-    InstScanEnd
+    InstGotoEnd
 };
 
 use literals::{LiteralSearcher};
@@ -198,7 +198,7 @@ impl Compiler {
         // add a `.*?` before the first capture group.
         // Other matching engines handle this by baking the logic into the
         // matching engine itself.
-        // println!("Compiling: {:?}", expr);
+        trace!("::compile_one expr={:?}", expr);
         let mut dotstar_patch = Patch { hole: Hole::None, entry: 0 };
         self.compiled.is_anchored_start = expr.is_anchored_start();
         self.compiled.is_anchored_end = expr.is_anchored_end();
@@ -908,9 +908,14 @@ impl Compiler {
     fn sc_concat(
         &mut self,
         ctx: SkipCompilerContext,
-        exprs: &[&Expr]
+        mut exprs: &[&Expr]
     ) -> Result {
         trace!("::sc_concat");
+
+        // short circut empty concatinations
+        if exprs.len() == 0 {
+            return Ok(Patch { hole: Hole::None, entry: self.sc_next() });
+        }
 
         // Maintain the invariant that we are dealing with a real
         // concatination.
@@ -923,16 +928,21 @@ impl Compiler {
 
         // we don't have to do any skip fusion here because the
         // literal parser has already done that for us.
-        let mut p = Patch { hole: Hole::None, entry: self.sc_next() };
-
-        // short circut the base case (perf not correctness)
-        if exprs.len() == 0 {
-            return Ok(p);
-        }
+        let mut p = match new_ctx.branch_type {
+            BranchType::NoBranch =>
+                Patch { hole: Hole::None, entry: self.sc_next() },
+            BranchType::NonIntersecting => {
+                let first_expr = &exprs[0];
+                exprs = &exprs[1..];
+                try!(self.sc(new_ctx, first_expr))
+            },
+            BranchType::Intersecting => return self.sc_concat_noopt(ctx, exprs),
+        };
 
         let mut noopt_start = 0;
         for (es_end, term) in exprs.iter().enumerate().rev() {
             if self.can_scan_to(term) {
+                trace!("::sc_concat can scan to term at idx {}", es_end);
                 for es_start in 0..es_end {
                     let opt = try!(self.can_perform_scan_opt(
                                             &exprs[es_start..es_end], term));
@@ -956,7 +966,7 @@ impl Compiler {
             }
         }
 
-        if noopt_start < exprs.len() - 1 {
+        if noopt_start < exprs.len() {
             let next = try!(self.sc_concat_noopt(ctx, &exprs[noopt_start..]));
             p = self.sc_continue(p, next);
         }
@@ -1439,7 +1449,7 @@ impl Compiler {
         trace!("::sc_repeat");
 
         if ctx.is_final_expression && self.expr_is_any(expr) {
-            Ok(self.sc_push_one(SkipInstHole::ScanEnd))
+            Ok(self.sc_push_one(SkipInstHole::GotoEnd))
         } else {
             match kind {
                 Repeater::ZeroOrOne =>
@@ -2229,7 +2239,7 @@ enum SkipInstHole {
     Skip { skip: usize },
     ScanLiteral { literal: LiteralSearcher, start: bool },
     EmptyLook { look: EmptyLook },
-    ScanEnd,
+    GotoEnd,
 }
 
 impl FillTo<SkipInst> for SkipInstHole {
@@ -2265,8 +2275,8 @@ impl FillTo<SkipInst> for SkipInstHole {
                     goto: goto,
                     look: look
                 }),
-            SkipInstHole::ScanEnd =>
-                SkipInst::SkipScanEnd(InstScanEnd {
+            SkipInstHole::GotoEnd =>
+                SkipInst::SkipGotoEnd(InstGotoEnd {
                     goto: goto
                 }),
         }

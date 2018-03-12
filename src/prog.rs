@@ -371,10 +371,10 @@ impl Program {
                     try!(write!(f, "{:04} {}", pc,
                                 Self::fmt_with_goto(pc, inst.goto, s)));
                 }
-                SkipScanEnd(ref inst) => {
+                SkipGotoEnd(ref inst) => {
                     try!(write!(f, "{:04} {}", pc,
                                 Self::fmt_with_goto(
-                                pc, inst.goto, "ScanEnd".to_string())));
+                                pc, inst.goto, "GotoEnd".to_string())));
                 }
             }
 
@@ -861,9 +861,9 @@ pub enum SkipInst {
     /// dotstars).
     SkipScanLiteral(InstScanLiteral),
 
-    /// SkipScanEnd tells the regex engine to just move the string
+    /// SkipGotoEnd tells the regex engine to just move the string
     /// pointer to the end of the input.
-    SkipScanEnd(InstScanEnd),
+    SkipGotoEnd(InstGotoEnd),
 }
 
 /// Representation of the SkipByte instruction.
@@ -902,9 +902,9 @@ pub struct InstScanLiteral {
     pub start: bool,
 }
 
-/// Representation of the InstScanEnd instruction.
+/// Representation of the InstGotoEnd instruction.
 #[derive(Clone, Debug)]
-pub struct InstScanEnd {
+pub struct InstGotoEnd {
     /// The next location to execute in the program if this instruction
     /// succeeds.
     pub goto: InstPtr,

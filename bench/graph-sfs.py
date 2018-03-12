@@ -17,8 +17,10 @@ def main():
                 rows[row["test_name"]] = row
         sf_data.append((int(sf), rows))
 
-    graph_all_features(sf_data, "captures::cap_middle")
-    plt.show()
+    for t in tests_of(sf_data):
+        graph_all_features(sf_data, t)
+        plt.savefig(test_name(t) + ".png")
+        plt.close()
 
 def graph_all_features(sf_data, test):
     """ Graph a test with one line for every feature found in the data.
@@ -35,6 +37,12 @@ def graph_all_features(sf_data, test):
 def graph_test(sf_data, test, features):
     """ Produce a line graph with one line per feature.
     """
+
+    xmin = sys.maxsize
+    xmax = 0
+
+    ymax = 0
+    ymin = sys.maxsize
     for feature in features:
         scale = []
         running_time = []
@@ -49,6 +57,14 @@ def graph_test(sf_data, test, features):
             err = int(data[test][feature + "_error"].replace(",", ""))
             error.append(err)
 
+        xmax = max(xmax, max(scale))
+        xmin = min(xmin, min(scale))
+
+        ymax = max(ymax, max(map(lambda x: x[0] + x[1],
+                            zip(running_time, error))))
+        ymin = min(ymin, min(map(lambda x: x[0] - x[1],
+                                zip(running_time, error))))
+
         plt.errorbar(
             scale,
             running_time,
@@ -58,10 +74,23 @@ def graph_test(sf_data, test, features):
 
     plt.xlabel("Scaling Factor")
     plt.ylabel("Running Time")
-    # plt.yscale("log")
-    plt.xscale("log")
-    plt.title(test)
+    plt.title(test_name(test))
+    plt.ylim((percent_shift(ymin, ymax - ymin, -10.0),
+              percent_shift(ymax, ymax - ymin, 10.0)))
+    plt.xlim((percent_shift(xmin, xmax - xmin, -10.0),
+              percent_shift(xmax, xmax - xmin, 10.0)))
     plt.legend()
+
+def percent_shift(n, span, p):
+    """ Shift down by -p% of p if p is negative, else shift up by p% of span
+    """
+    return n + (span * (p / 100.0))
+
+def tests_of(sf_data):
+    return sf_data[0][1].keys()
+
+def test_name(test):
+    return test[len("captures::cap_"):]
 
 if __name__ == "__main__":
     main()

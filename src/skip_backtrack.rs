@@ -116,16 +116,7 @@ impl<'a, 'r, 's, I: Input> Bounded<'a, 'r, 's, I> {
             slots: slots,
             m: cache,
         };
-
-        trace!("");
-        trace!("======================== PROG =============================");
-        if TRACE {
-            for (inst, i) in prog.skip_insts.iter().zip(0..) {
-                trace!("{:04}: {:?}", i, inst);
-            }
-        }
-        trace!("====================== END PROG ============================");
-        trace!("");
+        trace!("{:?}", prog);
 
         b.exec_(start)
     }
@@ -316,7 +307,7 @@ impl<'a, 'r, 's, I: Input> Bounded<'a, 'r, 's, I> {
                         return false;
                     };
                 }
-                SkipScanEnd(ref inst) => {
+                SkipGotoEnd(ref inst) => {
                     ip = inst.goto;
                     sp = input.len();
                 }
