@@ -14,7 +14,7 @@ use std::result;
 use std::sync::Arc;
 
 // Flip to true for debugging
-const TRACE: bool = true;
+const TRACE: bool = false;
 macro_rules! trace {
     ($($tts:tt)*) => {
         if TRACE {
