@@ -18,7 +18,7 @@ use std::fmt;
 use std::u8;
 
 use ast::Span;
-use hir::interval::{Interval, IntervalSet, IntervalSetIter};
+pub use hir::interval::{Interval, IntervalSet, IntervalSetIter};
 use unicode;
 
 pub use hir::visitor::{Visitor, visit};

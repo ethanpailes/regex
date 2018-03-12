@@ -29,6 +29,7 @@ use std::u8;
 //
 // Tests on this are relegated to the public API of HIR in src/hir.rs.
 
+/// A set of intervals.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IntervalSet<I> {
     ranges: Vec<I>,
@@ -42,6 +43,13 @@ impl<I: Interval> IntervalSet<I> {
     /// may overlap.
     pub fn new<T: IntoIterator<Item=I>>(intervals: T) -> IntervalSet<I> {
         let mut set = IntervalSet { ranges: intervals.into_iter().collect() };
+        set.canonicalize();
+        set
+    }
+
+    /// Create an interval set containing just one interval.
+    pub fn singleton(interval: I) -> IntervalSet<I> {
+        let mut set = IntervalSet { ranges: vec![interval] };
         set.canonicalize();
         set
     }
@@ -269,6 +277,11 @@ impl<I: Interval> IntervalSet<I> {
         self.ranges.drain(..drain_end);
     }
 
+    /// Returns true iff this set is empty
+    pub fn is_empty(&self) -> bool {
+        self.ranges.is_empty()
+    }
+
     /// Converts this set into a canonical ordering.
     fn canonicalize(&mut self) {
         if self.is_canonical() {
@@ -323,15 +336,23 @@ impl<'a, I> Iterator for IntervalSetIter<'a, I> {
     }
 }
 
+/// A representation of an interval between two different characters
+/// in an alphabet that this regex is being compiled for.
 pub trait Interval:
     Clone + Copy + Debug + Default + Eq + PartialEq + PartialOrd + Ord
 {
+    /// The element type of this interval.
     type Bound: Bound;
 
+    /// The lower bound of this interval.
     fn lower(&self) -> Self::Bound;
+    /// The upper bound of this interval.
     fn upper(&self) -> Self::Bound;
+    /// Set the lower bound of this interval.
     fn set_lower(&mut self, bound: Self::Bound);
+    /// Set the upper bound of this interval.
     fn set_upper(&mut self, bound: Self::Bound);
+    /// Apply case folding to this interval.
     fn case_fold_simple(&self, intervals: &mut Vec<Self>);
 
     /// Create a new interval.

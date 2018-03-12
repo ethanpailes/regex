@@ -661,6 +661,7 @@ mod simd_accel;
 #[path = "simd_fallback/mod.rs"]
 mod simd_accel;
 mod sparse;
+mod analisys;
 
 /// The `internal` module exists to support suspicious activity, such as
 /// testing different matching engines and supporting the `regex-debug` CLI
