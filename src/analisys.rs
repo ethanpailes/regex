@@ -1,7 +1,95 @@
 use syntax::hir::{
     Hir, HirKind, Literal, ClassUnicodeRange, Interval, IntervalSet,
-    Class
+    Class, Visitor
 };
+use syntax::hir;
+
+pub fn is_one_pass(expr: &Hir) -> bool {
+    struct IsOnePassVisitor(bool);
+    impl Visitor for IsOnePassVisitor {
+        type Output = bool;
+        type Err = ();
+
+        fn finish(self) -> Result<bool, ()> {
+            Ok(self.0)
+        }
+
+        fn visit_pre(&mut self, hir: &Hir) -> Result<(), ()> {
+            match hir.kind() {
+                &HirKind::Concat(ref es) => self.check_concat(&es),
+                &HirKind::Alternation(ref es) => self.check_alternation(&es),
+                _ => ()
+            }
+
+            Ok(())
+        }
+    }
+    impl IsOnePassVisitor {
+        fn new() -> Self {
+            IsOnePassVisitor(true)
+        }
+
+        fn check_concat(&mut self, es: &[Hir]) {
+            let mut rep_inners = vec![];
+            for e in es {
+                let e_rep_inners = IsOnePassVisitor::rep_inners_of(e);
+                if e_rep_inners.len() > 0 {
+                    rep_inners.extend(e_rep_inners);
+                } else {
+                    rep_inners.push(e);
+                    println!("check rep_inners={:?}", rep_inners);
+                    println!("rep_inners intersect={:?}",
+                                    fsets_intersect(&rep_inners));
+                    self.0 = self.0 && !fsets_intersect(&rep_inners);
+                    rep_inners.clear();
+                }
+            }
+
+            if rep_inners.len() > 0 {
+                self.0 = self.0 && !fsets_intersect(&rep_inners);
+            }
+        }
+
+        fn rep_inners_of<'a>(e: &'a Hir) -> Vec<&Hir> {
+            match e.kind() {
+                &HirKind::Repetition(ref rep) => vec![&*rep.hir],
+                &HirKind::Group(ref group) =>
+                    IsOnePassVisitor::rep_inners_of(&*group.hir),
+
+                // If all of the expressions are repetitions, we
+                // need to return the inners, otherwise this concat
+                // will be handed by a different visitor visit.
+                &HirKind::Concat(ref es) =>
+                    es.iter()
+                        .map(IsOnePassVisitor::rep_inners_of)
+                        .fold(vec![], |mut v, s| { v.extend(s); v }),
+
+                _ => vec![],
+            }
+        }
+
+        fn check_alternation(&mut self, es: &[Hir]) {
+            self.0 = self.0 && !fsets_intersect(&es.iter().collect::<Vec<_>>());
+        }
+    }
+
+    fn fsets_intersect(es: &[&Hir]) -> bool {
+        for (i, e1) in es.iter().enumerate() {
+            for (j, e2) in es.iter().enumerate() {
+                if i != j {
+                    let mut fset = fset_of(e1);
+                    fset.intersect(&fset_of(e2));
+                    if ! fset.is_empty() {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    hir::visit(expr, IsOnePassVisitor::new()).unwrap()
+}
 
 /// Compute the first set of a given regular expression.
 ///
@@ -9,7 +97,7 @@ use syntax::hir::{
 /// which might begin it. This is a less general version of the
 /// notion of a regular expression preview (the first set can be
 /// thought of as the 1-preview of a regular expression).
-pub fn fset_of(expr: &Hir) -> IntervalSet<ClassUnicodeRange> {
+fn fset_of(expr: &Hir) -> IntervalSet<ClassUnicodeRange> {
     fn singleton(c: char) -> IntervalSet<ClassUnicodeRange> {
         IntervalSet::singleton(ClassUnicodeRange::create(c, c))
     }
@@ -82,13 +170,17 @@ pub fn fset_of(expr: &Hir) -> IntervalSet<ClassUnicodeRange> {
 mod tests {
     use syntax::Parser;
     use syntax::hir::Hir;
-    use super::fset_of;
+    use super::{fset_of, is_one_pass};
 
     fn is_intersecting_fset(e1: &Hir, e2: &Hir) -> bool {
         let mut fset = fset_of(e1);
         fset.intersect(&fset_of(e2));
         ! fset.is_empty()
     }
+
+    //
+    // First set intersection tests
+    //
 
     #[test]
     fn fset_lit() {
@@ -194,5 +286,27 @@ mod tests {
 
         assert!(is_intersecting_fset(&e1, &e2));
         assert!(!is_intersecting_fset(&e1, &e3));
+    }
+
+    //
+    // One pass tests
+    //
+
+    #[test]
+    fn is_one_pass_smoke_test1() {
+        let e1 = Parser::new().parse(r"([^x]*)x(.*)").unwrap();
+        let e2 = Parser::new().parse(r"(.*)x(.*)").unwrap();
+
+        assert!(is_one_pass(&e1));
+        assert!(! is_one_pass(&e2));
+    }
+
+    #[test]
+    fn is_one_pass_smoke_test2() {
+        let e1 = Parser::new().parse(r"(\d+)-(\d+)").unwrap();
+        let e2 = Parser::new().parse(r"(\d+).(\d+)").unwrap();
+
+        assert!(is_one_pass(&e1));
+        assert!(! is_one_pass(&e2));
     }
 }

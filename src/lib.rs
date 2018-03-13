@@ -662,6 +662,7 @@ mod simd_accel;
 mod simd_accel;
 mod sparse;
 mod analisys;
+mod onepass;
 
 /// The `internal` module exists to support suspicious activity, such as
 /// testing different matching engines and supporting the `regex-debug` CLI
