@@ -90,4 +90,4 @@ do
 
 done
 
-python3 graph-sfs.py ${SCALING_FACTORS}
+python3 graph-sfs.py ${SCALING_FACTORS[@]}
