@@ -20,18 +20,60 @@ a few nice properties that we can leverage.
 
 use std::collections::HashSet;
 
+use std::fmt;
+
 use prog::{Program, Inst};
 
-struct OnePass {
+/// A OnePass DFA.
+#[derive(Debug)]
+pub struct OnePass {
     /// The table.
     table: Vec<StatePtr>,
     /// The stride.
     num_byte_classes: usize,
-    /// The start states
-    start_states: Vec<StatePtr>,
+    /// The starting state.
+    start_state: StatePtr,
 }
 
-enum OnePassError {
+impl fmt::Display for OnePass {
+    fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+        for i in 0..(self.table.len() / self.num_byte_classes) {
+            fn st_str(st: StatePtr) -> String {
+                if st == STATE_DEAD {
+                    "D".to_string()
+                } else {
+                    if st & STATE_SAVE != 0 {
+                        format!("({:x})", st & STATE_MAX)
+                    } else if st & STATE_MATCH != 0 {
+                        "M".to_string()
+                    } else {
+                        format!("{:x}", st & STATE_MAX)
+                    }
+                }
+            }
+
+            let trans_start = i * self.num_byte_classes;
+            let trans_end = (i+1) * self.num_byte_classes;
+            let trans = &self.table[trans_start..trans_end];
+            try!(writeln!(f, "{}: {}", 
+                    if trans_start as StatePtr == self.start_state {
+                        format!("START {:x}", trans_start)
+                    } else {
+                        format!("{:x}", trans_start)
+                    },
+                    trans.iter().enumerate()
+                         .map(|(i, x)| format!("{}/{}", i, st_str(*x)))
+                         .collect::<Vec<String>>()
+                         .join(" | ")));
+        }
+
+        Ok(())
+    }
+}
+
+
+#[derive(Debug)]
+pub enum OnePassError {
     /// This program can't be executed as a one-pass regex.
     NotOnePass,
     /// There are too many instructions to deal with.
@@ -47,45 +89,111 @@ enum OnePassError {
     __Nonexhaustive,
 }
 
-
-
 impl OnePass {
+    /// Attempt to compile a regex into a one-pass DFA
     pub fn compile(prog: &Program) -> Result<Self, OnePassError> {
         try!(Self::check_can_exec(prog));
 
         let mut dfa = OnePass {
             table: vec![],
             num_byte_classes: (prog.byte_classes[255] as usize + 1) + 1,
-            start_states: vec![],
+            start_state: 0,
         };
 
-        try!(dfa.compile_inst(&mut HashSet::new(), prog, 0));
+        let mut transitions = vec![STATE_DEAD; dfa.num_byte_classes];
+        dfa.build_transition_table(prog, 0, &mut transitions);
+        dfa.start_state = dfa.table.len() as StatePtr;
+        dfa.table.extend(transitions);
 
         Ok(dfa)
     }
 
-    /// Compile an instruction, recursively compiling any instructions
-    /// it references first.
-    ///
-    /// Returns a pointer to the compiled state.
-    fn compile_inst(
+    fn build_transition_table(
         &mut self,
-        compiled_states: &mut HashSet<usize>,
         prog: &Program,
-        inst: usize,
-    ) -> Result<StatePtr, OnePassError> {
-        let mut transitions = vec![STATE_DEAD; self.num_byte_classes];
+        start: usize,
+        transitions: &mut [StatePtr],
+    ) {
+        debug_assert!(transitions.len() == self.num_byte_classes);
 
-        for child_idx in ChildStates::new(prog, inst) {
-            let child_ptr =
-                try!(self.compile_inst(compiled_states, prog, child_idx));
+        let mut resume = match &prog[start] {
+            &Inst::Match(_) => vec![], // no kids
+            &Inst::Save(ref inst) => vec![inst.goto],
+            &Inst::Split(ref inst) => vec![inst.goto2, inst.goto1],
+            &Inst::EmptyLook(ref inst) => vec![inst.goto],
+            &Inst::Char(ref inst) => vec![inst.goto],
+            &Inst::Ranges(ref inst) => vec![inst.goto],
+            &Inst::Bytes(ref inst) => vec![inst.goto],
+        };
 
-            // match &prog[child_idx] {
-                // &Inst::Match(_) => 
-            // }
+        let mut seen = HashSet::new();
+        seen.insert(start);
+
+        while let Some(inst_idx) = resume.pop() {
+            if seen.contains(&inst_idx) {
+                return;
+            }
+            seen.insert(inst_idx);
+
+            match &prog[inst_idx] {
+                &Inst::Match(_) => {
+                    // A match instruction must be an only child.
+                    let p = STATE_MATCH | self.table.len() as StatePtr;
+                    self.table.extend(vec![STATE_DEAD; self.num_byte_classes]);
+                    transitions.iter_mut().for_each(|t| *t = p);
+                }
+                &Inst::Save(ref inst) => {
+                    let mut save_transitions =
+                        vec![STATE_DEAD; self.num_byte_classes];
+                    self.build_transition_table(
+                        prog, inst.goto, &mut save_transitions);
+
+                    // TODO: test with just one byte class
+
+                    // Save instructions take up two transition table
+                    // entries. The first entry indicates the save slot,
+                    // while the second contains the actual transitions.
+                    // We need to route any transitions which would be
+                    // happening in the save subtree though this entry
+                    // in the table.
+                    let p = STATE_SAVE | self.table.len() as StatePtr;
+                    self.table.extend(
+                        vec![inst.slot as u32; self.num_byte_classes]);
+                    for (i, st) in save_transitions.iter().enumerate() {
+                        if *st != STATE_DEAD {
+                            transitions[i] = p;
+                        }
+                    }
+                    self.table.extend(save_transitions);
+                }
+                &Inst::Split(ref inst) => {
+                    resume.push(inst.goto2);
+                    resume.push(inst.goto1);
+                }
+                &Inst::EmptyLook(ref inst) => {
+                    // This is definitly doable with an intermediary state,
+                    // but the normal DFA does something with flags that
+                    // I should probably ask @burntsushi about.
+                    // For now, we just skip them.
+                    //
+                    // TODO: emptylook
+                    resume.push(inst.goto);
+                }
+                &Inst::Bytes(ref inst) => {
+                    let mut bytes_transitions =
+                        vec![STATE_DEAD; self.num_byte_classes];
+                    self.build_transition_table(
+                        prog, inst.goto, &mut bytes_transitions);
+
+                    let p = self.table.len() as StatePtr;
+                    self.table.extend(bytes_transitions);
+
+                    let byte_class = prog.byte_classes[inst.start as usize];
+                    transitions[byte_class as usize] = p;
+                }
+                &Inst::Char(_) | &Inst::Ranges(_) => unreachable!(),
+            }
         }
-
-        Ok(STATE_DEAD)
     }
 
     /// Check if we can execute this program.
@@ -121,108 +229,33 @@ impl OnePass {
 
 }
 
-// I should be iterating over the split and save states instead,
-// with each test instruction actually representing and edge.
-// Whoops.
-
-
-struct ChildStates<'a> {
-    /// The compiled program that we are iterating within.
-    insts: &'a Program,
-    /// A stack of instructions we have yet to explore.
-    resume: Vec<usize>,
-    /// The set of instructions that we have already returned.
-    /// Used to prevent infinite loops.
-    seen: HashSet<usize>,
-}
-impl<'a> ChildStates<'a> {
-    fn new(insts: &'a Program, start: usize) -> Self {
-        use std::iter::FromIterator;
-
-        let resume = match &insts[start] {
-            &Inst::Match(_) => vec![], // no kids
-            &Inst::Save(ref inst) => vec![inst.goto],
-            &Inst::Split(ref inst) => vec![inst.goto2, inst.goto1],
-            &Inst::EmptyLook(ref inst) => vec![inst.goto],
-            &Inst::Char(ref inst) => vec![inst.goto],
-            &Inst::Ranges(ref inst) => vec![inst.goto],
-            &Inst::Bytes(ref inst) => vec![inst.goto],
-        };
-
-        let mut seen = HashSet::new();
-        seen.insert(start);
-
-        ChildStates {
-            insts: insts,
-            seen: seen,
-            resume: resume,
-        }
-    }
-}
-impl<'a> Iterator for ChildStates<'a> {
-    type Item = usize;
-
-    fn next(&mut self) -> Option<usize> {
-        self.resume.pop().and_then(|mut i| {
-            loop {
-                if self.seen.contains(&i) {
-                    return None;
-                }
-                self.seen.insert(i);
-
-                match &self.insts[i] {
-                    &Inst::Match(_) | &Inst::EmptyLook(_) | &Inst::Save(_)
-                    | &Inst::Char(_) | &Inst::Ranges(_) | &Inst::Bytes(_) => {
-                        return Some(i);
-                    }
-                    &Inst::Split(ref inst) => {
-                        self.resume.push(inst.goto2);
-                        i = inst.goto1;
-                        continue;
-                    }
-                }
-            }
-        })
-    }
-}
-
-
 type StatePtr = u32;
 
-/// The CAP_START state means that the DFA should save the current
+/// The CAP_SAVE state means that the DFA should save the current
 /// string pointer in a capture slot indicated by the first entry
 /// in its transition table. The DFA always transitions to the next
 /// state in the state table.
-const STATE_CAP_START: StatePtr = 1 << 31;
-
-/// The CAP_END state means that the DFA should save the current
-/// string pointer in a capture slot indicated by the first entry
-/// in its transition table. The DFA always transitions to the next
-/// state in the state table.
-const STATE_CAP_END: StatePtr = 1 << 30;
+const STATE_SAVE: StatePtr = 1 << 31;
 
 /// A dead state means that the state has been computed and it is known that
 /// once it is entered, no future match can ever occur.
 ///
 /// It is not valid to dereference STATE_DEAD.
-const STATE_DEAD: StatePtr = STATE_CAP_END + 1;
+const STATE_DEAD: StatePtr = STATE_SAVE + 1;
 
+/*
 /// A quit state means that the DFA came across some input that it doesn't
 /// know how to process correctly. The DFA should quit and another matching
 /// engine should be run in its place.
 ///
 /// It is not valid to dereference STATE_QUIT.
 const STATE_QUIT: StatePtr = STATE_DEAD + 1;
-
-/// A start state is a state that the DFA can start in.
-///
-/// Note that start states have their lower bits set to a state pointer.
-const STATE_START: StatePtr = 1 << 29;
+*/
 
 /// A match state means that the regex has successfully matched.
 ///
 /// Note that match states have their lower bits set to a state pointer.
-const STATE_MATCH: StatePtr = 1 << 28;
+const STATE_MATCH: StatePtr = 1 << 30;
 
 /// The maximum state pointer. This is useful to mask out the "valid" state
 /// pointer from a state with the "start" or "match" bits set.

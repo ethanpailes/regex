@@ -33,6 +33,7 @@ use re_set;
 use re_trait::{RegularExpression, Slot, Locations, as_slots};
 use re_unicode;
 use utf8::next_utf8;
+use onepass::OnePass;
 
 /// `Exec` manages the execution of a regular expression.
 ///
@@ -82,6 +83,12 @@ struct ExecReadOnly {
     /// preceding `.*?`). This is used by the DFA to find the starting location
     /// of matches.
     dfa_reverse: Program,
+    /// A compiled OnePass DFA. The OnePass DFA gets its own type (rather
+    /// than another Program) because it is a fully constructed DFA
+    /// rather than an NFA (even the dfa and dfa_reverse members above
+    /// are actually NFAs that will get jit-compiled to dfas during execution).
+    /// It is stored in an option because not all regex are one pass.
+    onepass: Option<OnePass>,
     /// A set of suffix literals extracted from the regex.
     ///
     /// Prefix literals are stored on the `Program`, since they are used inside
@@ -289,6 +296,7 @@ impl ExecBuilder {
                 nfa: Program::new(),
                 dfa: Program::new(),
                 dfa_reverse: Program::new(),
+                onepass: None,
                 suffixes: LiteralSearcher::empty(),
                 match_type: MatchType::Nothing,
             });
@@ -331,6 +339,7 @@ impl ExecBuilder {
 
         let mut ro = ExecReadOnly {
             res: self.options.pats,
+            onepass: OnePass::compile(&nfa).ok(),
             nfa: nfa,
             dfa: dfa,
             dfa_reverse: dfa_reverse,

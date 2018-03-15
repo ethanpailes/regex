@@ -38,6 +38,7 @@ Options:
     --dfa                Show the instruction codes for a DFA.
     --dfa-reverse        Show the instruction codes for a reverse DFA.
                          This implies --dfa.
+    --onepass            Show the transition table for the one-pass DFA (if any).
     -a, --all-literals   Shows all literals extracted.
                          By default, only unambiguous literals are shown.
     --literal-limit ARG  An approximate limit on the total size (in bytes)
@@ -71,6 +72,7 @@ struct Args {
     flag_bytes: bool,
     flag_dfa: bool,
     flag_dfa_reverse: bool,
+    flag_onepass: bool,
     flag_all_literals: bool,
     flag_literal_limit: usize,
     flag_class_limit: usize,
@@ -203,8 +205,17 @@ fn cmd_compile(args: &Args) -> Result<()> {
             .only_utf8(!args.flag_bytes)
             .dfa(args.flag_dfa)
             .reverse(args.flag_dfa_reverse);
-    let prog = try!(compiler.compile(&exprs));
-    print!("{:?}", prog);
+    let mut prog = try!(compiler.compile(&exprs));
+    if args.flag_onepass {
+        prog.is_one_pass = 
+            exprs.iter().all(|e| regex::internal::is_one_pass(e));
+        match regex::internal::OnePass::compile(&prog) {
+            Ok(op) => println!("{}", op),
+            Err(e) => println!("{:?}", e),
+        }
+    } else {
+        print!("{:?}", prog);
+    }
     Ok(())
 }
 

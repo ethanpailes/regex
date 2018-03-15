@@ -4,6 +4,7 @@ use syntax::hir::{
 };
 use syntax::hir;
 
+/// True if the given expression is one-pass
 pub fn is_one_pass(expr: &Hir) -> bool {
     struct IsOnePassVisitor(bool);
     impl Visitor for IsOnePassVisitor {
@@ -37,9 +38,6 @@ pub fn is_one_pass(expr: &Hir) -> bool {
                     rep_inners.extend(e_rep_inners);
                 } else {
                     rep_inners.push(e);
-                    println!("check rep_inners={:?}", rep_inners);
-                    println!("rep_inners intersect={:?}",
-                                    fsets_intersect(&rep_inners));
                     self.0 = self.0 && !fsets_intersect(&rep_inners);
                     rep_inners.clear();
                 }
