@@ -1,7 +1,7 @@
 
 extern crate char_iter;
 
-use syntax::{Expr};
+use syntax::{Expr, CharClass, ClassRange, ByteClass, ByteRange};
 use std::ascii::AsciiExt;
 
 // Flip to true for debugging
@@ -46,7 +46,7 @@ macro_rules! term_intersects {
 pub fn inter_fset(lhs: &Expr, rhs: &Expr) -> bool {
     trace!("inter_fset: lhs={:?} rhs={:?}", lhs, rhs);
 
-    match rhs {
+    let res = match rhs {
         // base cases
         &Expr::Empty => false,
         &Expr::Literal { ref chars, casei } =>
@@ -55,10 +55,26 @@ pub fn inter_fset(lhs: &Expr, rhs: &Expr) -> bool {
             term_intersects!(lhs, rhs, char::from(bytes[0]), casei),
         &Expr::AnyChar => *lhs != Expr::Empty,
         &Expr::AnyCharNoNL =>
-            *lhs != Expr::Empty && term_intersects!(lhs, rhs, '\n', false),
+            *lhs != Expr::Empty && 
+                inter_fset(lhs, &Expr::Class(CharClass {
+                    ranges: vec![ ClassRange {
+                                start: '\x00',
+                                end: '\x09'
+                            }, ClassRange { // ranges are inclusive on both ends
+                                start: '\x0B',
+                                end: '\x7F'
+                            }]
+                })),
         &Expr::AnyByte => *lhs != Expr::Empty,
         &Expr::AnyByteNoNL =>
-            *lhs != Expr::Empty && term_intersects!(lhs, rhs, '\n', false),
+            *lhs != Expr::Empty && 
+                inter_fset(lhs, &Expr::ClassBytes(ByteClass {
+                    ranges: vec![
+                        ByteRange { start: 0x00, end: 0x09, },
+                        ByteRange { start: 0x0B, end: 0xFF, }
+                    ]
+                })),
+
         &Expr::Class(ref class) =>
             class.iter().any(|cr|
                 char_iter::new(cr.start, cr.end).any(|c|
@@ -102,7 +118,11 @@ pub fn inter_fset(lhs: &Expr, rhs: &Expr) -> bool {
             inter_fset(lhs, &*e),
         &Expr::Alternate(ref es) =>
             es.iter().any(|e| inter_fset(lhs, e)),
-    }
+    };
+
+    trace!("inter_fset ret={}", res);
+
+    res
 }
 
 /// Determines if the expression is a terminal expression

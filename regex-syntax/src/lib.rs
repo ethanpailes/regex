@@ -240,7 +240,8 @@ impl Repeater {
 /// automatically translated to `[a-cA-C]`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CharClass {
-    ranges: Vec<ClassRange>,
+    /// The class ranges
+    pub ranges: Vec<ClassRange>,
 }
 
 /// A single inclusive range in a character class.
@@ -285,7 +286,8 @@ pub struct ClassRange {
 /// `(?i)[a-c]` is automatically translated to `[a-cA-C]`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ByteClass {
-    ranges: Vec<ByteRange>,
+    /// The byte class ranges
+    pub ranges: Vec<ByteRange>,
 }
 
 /// A single inclusive range in a byte class.

@@ -910,7 +910,7 @@ impl Compiler {
         ctx: SkipCompilerContext,
         mut exprs: &[&Expr]
     ) -> Result {
-        trace!("::sc_concat");
+        trace!("::sc_concat ctx={:?}", ctx);
 
         // short circut empty concatinations
         if exprs.len() == 0 {
@@ -1373,7 +1373,7 @@ impl Compiler {
         ctx: SkipCompilerContext,
         exprs: &[Expr]
     ) -> Result {
-        trace!("::sc_alternate");
+        trace!("::sc_alternate es={:?}", exprs);
         debug_assert!(
             exprs.len() >= 2, "alternates must have at least 2 exprs");
 

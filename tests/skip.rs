@@ -242,6 +242,13 @@ macro_rules! skip_test {
                 assert_eq!(None, caps.get(1));
             }
 
+            #[test]
+            fn skip_anychar_intersection_bug() {
+                let re = regex(r".*? foo(.).*?|.*?");
+                let caps = re.captures(b" bary").unwrap();
+                assert!(! caps.get(1).is_some());
+            }
+
         }
     }
 }
