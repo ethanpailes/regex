@@ -18,7 +18,9 @@ a few nice properties that we can leverage.
        be implemented right in the DFA.
 */
 
-use prog::Program;
+use std::collections::HashSet;
+
+use prog::{Program, Inst};
 
 struct OnePass {
     /// The table.
@@ -45,6 +47,8 @@ enum OnePassError {
     __Nonexhaustive,
 }
 
+
+
 impl OnePass {
     pub fn compile(prog: &Program) -> Result<Self, OnePassError> {
         try!(Self::check_can_exec(prog));
@@ -55,37 +59,33 @@ impl OnePass {
             start_states: vec![],
         };
 
-        for inst in prog {
-            match inst {
-                &Match(slot) => {
-                }
-                /*
-    Match(usize),
-    /// Save causes the program to save the current location of the input in
-    /// the slot indicated by InstSave.
-    Save(InstSave),
-    /// Split causes the program to diverge to one of two paths in the
-    /// program, preferring goto1 in InstSplit.
-    Split(InstSplit),
-    /// EmptyLook represents a zero-width assertion in a regex program. A
-    /// zero-width assertion does not consume any of the input text.
-    EmptyLook(InstEmptyLook),
-    /// Char requires the regex program to match the character in InstChar at
-    /// the current position in the input.
-    Char(InstChar),
-    /// Ranges requires the regex program to match the character at the current
-    /// position in the input with one of the ranges specified in InstRanges.
-    Ranges(InstRanges),
-    /// Bytes is like Ranges, except it expresses a single byte range. It is
-    /// used in conjunction with Split instructions to implement multi-byte
-    /// character classes.
-    Bytes(InstBytes),
-    */
+        try!(dfa.compile_inst(&mut HashSet::new(), prog, 0));
 
-            }
+        Ok(dfa)
+    }
+
+    /// Compile an instruction, recursively compiling any instructions
+    /// it references first.
+    ///
+    /// Returns a pointer to the compiled state.
+    fn compile_inst(
+        &mut self,
+        compiled_states: &mut HashSet<usize>,
+        prog: &Program,
+        inst: usize,
+    ) -> Result<StatePtr, OnePassError> {
+        let mut transitions = vec![STATE_DEAD; self.num_byte_classes];
+
+        for child_idx in ChildStates::new(prog, inst) {
+            let child_ptr =
+                try!(self.compile_inst(compiled_states, prog, child_idx));
+
+            // match &prog[child_idx] {
+                // &Inst::Match(_) => 
+            // }
         }
 
-        Err(OnePassError::TooBig)
+        Ok(STATE_DEAD)
     }
 
     /// Check if we can execute this program.
@@ -120,6 +120,72 @@ impl OnePass {
     }
 
 }
+
+// I should be iterating over the split and save states instead,
+// with each test instruction actually representing and edge.
+// Whoops.
+
+
+struct ChildStates<'a> {
+    /// The compiled program that we are iterating within.
+    insts: &'a Program,
+    /// A stack of instructions we have yet to explore.
+    resume: Vec<usize>,
+    /// The set of instructions that we have already returned.
+    /// Used to prevent infinite loops.
+    seen: HashSet<usize>,
+}
+impl<'a> ChildStates<'a> {
+    fn new(insts: &'a Program, start: usize) -> Self {
+        use std::iter::FromIterator;
+
+        let resume = match &insts[start] {
+            &Inst::Match(_) => vec![], // no kids
+            &Inst::Save(ref inst) => vec![inst.goto],
+            &Inst::Split(ref inst) => vec![inst.goto2, inst.goto1],
+            &Inst::EmptyLook(ref inst) => vec![inst.goto],
+            &Inst::Char(ref inst) => vec![inst.goto],
+            &Inst::Ranges(ref inst) => vec![inst.goto],
+            &Inst::Bytes(ref inst) => vec![inst.goto],
+        };
+
+        let mut seen = HashSet::new();
+        seen.insert(start);
+
+        ChildStates {
+            insts: insts,
+            seen: seen,
+            resume: resume,
+        }
+    }
+}
+impl<'a> Iterator for ChildStates<'a> {
+    type Item = usize;
+
+    fn next(&mut self) -> Option<usize> {
+        self.resume.pop().and_then(|mut i| {
+            loop {
+                if self.seen.contains(&i) {
+                    return None;
+                }
+                self.seen.insert(i);
+
+                match &self.insts[i] {
+                    &Inst::Match(_) | &Inst::EmptyLook(_) | &Inst::Save(_)
+                    | &Inst::Char(_) | &Inst::Ranges(_) | &Inst::Bytes(_) => {
+                        return Some(i);
+                    }
+                    &Inst::Split(ref inst) => {
+                        self.resume.push(inst.goto2);
+                        i = inst.goto1;
+                        continue;
+                    }
+                }
+            }
+        })
+    }
+}
+
 
 type StatePtr = u32;
 
