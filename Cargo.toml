@@ -99,6 +99,11 @@ name = "backtrack-utf8bytes"
 path = "tests/test_backtrack_bytes.rs"
 name = "backtrack-bytes"
 
+# Run the test suite, attempting to force a onepass execution
+[[test]]
+path = "tests/test_onepass.rs"
+name = "onepass"
+
 [profile.release]
 debug = true
 

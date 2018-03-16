@@ -185,6 +185,15 @@ impl ExecBuilder {
         self
     }
 
+    /// Sets the matching engine to use the one-pass DFA if it is possible
+    /// to compile one (namely if the regex is one-pass). If it is not
+    /// possible to execute the regex as one-pass, a different engine
+    /// will be chosen automatically.
+    pub fn onepass(mut self) -> Self {
+        self.match_type = Some(MatchType::OnePass);
+        self
+    }
+
     /// Compiles byte based programs for use with the NFA matching engines.
     ///
     /// By default, the NFA engines match on Unicode scalar values. They can
@@ -440,6 +449,18 @@ impl<'c> RegularExpression for ExecNoSync<'c> {
                     dfa::Result::Quit => self.shortest_nfa(text, start),
                 }
             }
+            MatchType::OnePass => {
+                debug_assert!(self.ro.onepass.is_some());
+
+                match self.ro.onepass {
+                    Some(ref op) => {
+                        let mut slots = vec![None; self.slots_len()];
+                        op.exec(&mut slots, &text[start..]);
+                        slots[1].and_then(|_| slots[0])
+                    }
+                    None => unreachable!(),
+                }
+            }
             MatchType::Nfa(ty) => self.shortest_nfa_type(ty, text, start),
             MatchType::Nothing => None,
         }
@@ -488,6 +509,18 @@ impl<'c> RegularExpression for ExecNoSync<'c> {
                     dfa::Result::Quit => self.match_nfa(text, start),
                 }
             }
+            MatchType::OnePass => {
+                debug_assert!(self.ro.onepass.is_some());
+
+                match self.ro.onepass {
+                    Some(ref op) => {
+                        let mut slots = vec![None; self.slots_len()];
+                        op.exec(&mut slots, &text[start..]);
+                        slots[0].is_some() && slots[1].is_some()
+                    }
+                    None => unreachable!(),
+                }
+            }
             MatchType::Nfa(ty) => self.match_nfa_type(ty, text, start),
             MatchType::Nothing => false,
         }
@@ -531,6 +564,18 @@ impl<'c> RegularExpression for ExecNoSync<'c> {
                     }
                 }
             }
+            MatchType::OnePass => {
+                debug_assert!(self.ro.onepass.is_some());
+
+                match self.ro.onepass {
+                    Some(ref op) => {
+                        let mut slots = vec![None; self.slots_len()];
+                        op.exec(&mut slots, &text[start..]);
+                        slots[0].and_then(|s1| slots[1].map(|s2| (s1, s2)))
+                    }
+                    None => unreachable!(),
+                }
+            }
             MatchType::Nfa(ty) => self.find_nfa(ty, text, start),
             MatchType::Nothing => None,
             MatchType::DfaMany => {
@@ -553,7 +598,7 @@ impl<'c> RegularExpression for ExecNoSync<'c> {
         text: &[u8],
         start: usize,
     ) -> Option<(usize, usize)> {
-        let slots = as_slots(locs);
+        let mut slots = as_slots(locs);
         for slot in slots.iter_mut() {
             *slot = None;
         }
@@ -608,6 +653,17 @@ impl<'c> RegularExpression for ExecNoSync<'c> {
                     }
                     dfa::Result::NoMatch(_) => None,
                     dfa::Result::Quit => self.captures_nfa(slots, text, start),
+                }
+            }
+            MatchType::OnePass => {
+                debug_assert!(self.ro.onepass.is_some());
+
+                match self.ro.onepass {
+                    Some(ref op) => {
+                        op.exec(&mut slots, &text[start..]);
+                        slots[0].and_then(|s1| slots[1].map(|s2| (s1, s2)))
+                    }
+                    None => unreachable!(),
                 }
             }
             MatchType::Nfa(ty) => {
@@ -1058,6 +1114,7 @@ impl<'c> ExecNoSync<'c> {
                     }
                 }
             }
+            OnePass => unreachable!("@burntsushi what do?"),
             Nfa(ty) => self.exec_nfa(ty, matches, &mut [], false, text, start),
             Nothing => false,
         }
@@ -1153,11 +1210,21 @@ impl Clone for Exec {
 }
 
 impl ExecReadOnly {
-    fn choose_match_type(&self, hint: Option<MatchType>) -> MatchType {
+    fn choose_match_type(&self, mut hint: Option<MatchType>) -> MatchType {
         use self::MatchType::*;
+        // Try to use the onepass DFA if we have been asked to
+        if let Some(MatchType::OnePass) = hint {
+            if self.onepass.is_some() {
+                return MatchType::OnePass;
+            } else {
+                hint = None;
+            }
+        }
+
         if let Some(Nfa(_)) = hint {
             return hint.unwrap();
         }
+
         // If the NFA is empty, then we'll never match anything.
         if self.nfa.insts.is_empty() {
             return Nothing;
@@ -1239,7 +1306,7 @@ impl ExecReadOnly {
 #[derive(Clone, Copy, Debug)]
 enum MatchType {
     /// A single or multiple literal search. This is only used when the regex
-    /// can be decomposed into unambiguous literal search.
+    /// can be decomposed into an unambiguous literal search.
     Literal(MatchLiteralType),
     /// A normal DFA search.
     Dfa,
@@ -1249,6 +1316,9 @@ enum MatchType {
     DfaSuffix,
     /// Use the DFA on two or more regular expressions.
     DfaMany,
+    /// Use the one-pass DFA if at all possible, otherwise fall back
+    /// on the auto-selection behavior.
+    OnePass,
     /// An NFA variant.
     Nfa(MatchNfaType),
     /// No match is ever possible, so don't ever try to search.
