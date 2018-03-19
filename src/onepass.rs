@@ -18,11 +18,21 @@ a few nice properties that we can leverage.
        be implemented right in the DFA.
 */
 
-// use std::collections::HashSet;
+use std::collections::HashMap;
 
 use std::fmt;
 use prog::{Program, Inst};
 use re_trait::Slot;
+
+// flip to true for debugging
+const TRACE: bool = true;
+macro_rules! trace {
+    ($($tts:tt)*) => {
+        if TRACE {
+            println!($($tts)*);
+        }
+    }
+}
 
 /// A OnePass DFA.
 #[derive(Debug)]
@@ -31,9 +41,14 @@ pub struct OnePass {
     table: Vec<StatePtr>,
     /// The stride.
     num_byte_classes: usize,
+    /// The byte classes of this regex.
     byte_classes: Vec<u8>,
     /// The starting state.
     start_state: StatePtr,
+    /// True if the regex is anchored at the end.
+    is_anchored_end: bool,
+    /// True if the regex is anchored at the start.
+    is_anchored_start: bool,
 }
 
 impl fmt::Display for OnePass {
@@ -41,36 +56,16 @@ impl fmt::Display for OnePass {
         try!(writeln!(f, "START: {}\n", st_str(self.start_state)));
 
         for i in 0..(self.table.len() / self.num_byte_classes) {
+            let addr = format!("{:x}", i * self.num_byte_classes);
             let trans_start = i * self.num_byte_classes;
             let trans_end = (i+1) * self.num_byte_classes;
             let trans = &self.table[trans_start..trans_end];
-            try!(writeln!(f, "{:x}: {}", trans_start,
-                    trans.iter().enumerate()
-                         .map(|(i, x)| format!("{}/{}", i, st_str(*x)))
-                         .collect::<Vec<String>>()
-                         .join(" | ")));
+            try!(Self::fmt_line(addr, trans, f));
         }
 
         Ok(())
     }
 }
-
-fn st_str(st: StatePtr) -> String {
-    if st == STATE_DEAD {
-        "D".to_string()
-    } else if st == STATE_POISON {
-        "P".to_string()
-    } else {
-        if st & STATE_SAVE != 0 {
-            format!("({:x})", st & STATE_MAX)
-        } else if st & STATE_MATCH != 0 {
-            "M".to_string()
-        } else {
-            format!("{:x}", st & STATE_MAX)
-        }
-    }
-}
-
 
 
 #[derive(Debug)]
@@ -91,105 +86,483 @@ pub enum OnePassError {
 }
 
 impl OnePass {
-    /// Attempt to compile a regex into a one-pass DFA
-    pub fn compile(prog: &Program) -> Result<Self, OnePassError> {
-        try!(Self::check_can_exec(prog));
 
-        let mut dfa = OnePass {
-            table: vec![],
-            num_byte_classes: (prog.byte_classes[255] as usize + 1) + 1,
-            byte_classes: prog.byte_classes.clone(),
-            start_state: 0,
-        };
+    /// Execute the one-pass DFA, populating the list of capture slots
+    /// as you go.
+    ///
+    /// TODO: ask @burntsushi about doing the right thing WRT regexsets
+    ///       here.
+    pub fn exec(&self, slots: &mut [Slot], text: &[u8], mut at: usize) -> bool {
+        trace!("execing on '{:?}'\n{}", text, self);
 
-        let mut transitions = vec![STATE_DEAD; dfa.num_byte_classes];
-        dfa.build_transition_table(prog, 0, &mut transitions);
-        dfa.start_state = dfa.table.len() as StatePtr;
-        dfa.table.extend(transitions);
+        if self.is_anchored_start {
+            match self.exec_(slots, text, at) {
+                OnePassMatch::Match => true,
+                OnePassMatch::NoMatch(_) => false,
+            }
+        } else {
+            loop {
+                match self.exec_(slots, text, at) {
+                    OnePassMatch::Match => return true,
+                    OnePassMatch::NoMatch(last) => {
+                        // TODO: this will probably dominate the runtime
+                        //       cost. I need previews or something.
+                        for s in slots.iter_mut() {
+                            *s = None;
+                        }
+                        at = last + 1;
+                    }
+                }
 
-        Ok(dfa)
+                if at >= text.len() {
+                    break;
+                }
+            }
+
+            false
+        }
     }
 
-    // Should I maintain a mapping from instructions to state pointers?
-    //
-    // TODO: I should really reuse this to avoid hammering the stack.
-    // What is this amateur hour?
-    //  - build up an intermediary vector of transition tables mapping
-    //    instruction indicies to transitions, DFS through that
-    //    with an explicit stack (which will use heap space), emitting
-    //    onto the real transition table.
-    //
-    fn build_transition_table(
-        &mut self,
-        prog: &Program,
-        start: usize,
-        transitions: &mut [StatePtr],
-    ) {
-        debug_assert!(transitions.len() == self.num_byte_classes);
-        let mut resume = vec![start];
 
-        while let Some(inst_idx) = resume.pop() {
-            match &prog[inst_idx] {
-                &Inst::Match(_) => {
-                    // A match instruction must be an only child.
-                    let p = STATE_MATCH | self.table.len() as StatePtr;
-                    self.table.extend(vec![STATE_POISON; self.num_byte_classes]);
-                    transitions.iter_mut().for_each(|t| *t = p);
+    /// Execute the one-pass DFA, populating the list of capture slots
+    /// as you go.
+    ///
+    /// Returns Match if there is a match and NoMatch(final string pointer)
+    /// otherwise.
+    ///
+    /// TODO: ask @burntsushi about doing the right thing WRT regexsets
+    ///       here.
+    #[inline]
+    fn exec_(
+        &self,
+        slots: &mut [Slot],
+        text: &[u8],
+        mut at: usize
+    ) -> OnePassMatch {
+
+        let mut state_ptr = self.start_state;
+        while at < text.len() {
+            debug_assert!(state_ptr != STATE_POISON);
+            let byte_class = self.byte_classes[text[at] as usize] as usize;
+            trace!("::exec loop st={} bc={}", st_str(state_ptr), byte_class);
+
+            if state_ptr & STATE_SPECIAL == 0 {
+                state_ptr = self.table[state_ptr as usize + byte_class];
+            } else if state_ptr == STATE_DEAD {
+                return OnePassMatch::NoMatch(at);
+            } else if state_ptr & STATE_SAVE != 0 {
+                // No state should ever have both the SAVE and MATCH
+                // flags set.
+                debug_assert!(state_ptr & STATE_MATCH == 0);
+
+                let state_idx = (state_ptr & STATE_MAX) as usize;
+
+                // the second save entry is filled with the save slots
+                // that we need to fill.
+                let slot_idx = self.table[state_idx + self.num_byte_classes];
+                slots[slot_idx as usize] = Some(at);
+
+                state_ptr = self.table[state_idx + byte_class];
+                continue;
+            } else if state_ptr == STATE_MATCH {
+                if self.is_anchored_end {
+                    return OnePassMatch::Match;
                 }
-                &Inst::Save(ref inst) => {
-                    let mut save_transitions =
-                        vec![STATE_DEAD; self.num_byte_classes];
-                    self.build_transition_table(
-                        prog, inst.goto, &mut save_transitions);
+            }
 
-                    // TODO: test with just one byte class
+            at += 1;
+        }
 
-                    let p = STATE_SAVE | self.table.len() as StatePtr;
-                    // the save slot entry
-                    self.table.extend(
-                        vec![inst.slot as u32; self.num_byte_classes]);
+        // set the byte class to be EOF
+        let byte_class = self.num_byte_classes - 1;
+        loop {
+            trace!("::exec eof st={} bc={}", st_str(state_ptr), byte_class);
 
-                    // Now we set up `transitions` to point to this
-                    // save instruction in all the places where it is
-                    // relevant.
-                    for (i, st) in save_transitions.iter().enumerate() {
-                        if *st != STATE_DEAD {
-                            debug_assert!(transitions[i] == STATE_DEAD);
-                            transitions[i] = p;
-                        }
+            if state_ptr & STATE_SPECIAL == 0 {
+                state_ptr = self.table[state_ptr as usize + byte_class];
+            } else if state_ptr & STATE_SAVE != 0 {
+                // No state should ever have both the SAVE and MATCH
+                // flags set.
+                debug_assert!(state_ptr & STATE_MATCH == 0);
+
+                let state_idx = (state_ptr & STATE_MAX) as usize;
+
+                // the second save entry is filled with the save slots
+                // that we need to fill.
+                let slot_idx = self.table[state_idx + self.num_byte_classes];
+                slots[slot_idx as usize] = Some(at);
+
+                state_ptr = self.table[state_idx + byte_class];
+                continue;
+            }
+
+            break;
+        }
+
+        if state_ptr == STATE_MATCH {
+            OnePassMatch::Match
+        } else {
+            OnePassMatch::NoMatch(at)
+        }
+    }
+
+    /*
+    #[inline]
+    fn step(
+        &self,
+        slots: &mut [Slot],
+        text: &[u8],
+        state_ptr: StatePtr,
+        at: usize,
+        byte_class: usize,
+    ) -> (usize, StatePtr) {
+        debug_assert!(at <= text.len());
+        debug_assert!(byte_class == self.num_byte_classes - 1 ||
+            byte_class == self.byte_classes[text[at] as usize] as usize);
+
+        if state_ptr & STATE_SPECIAL == 0 {
+            // no flags are set so we don't need to mask them away
+            // with STATE_MAX
+            (at + 1, self.table[state_ptr as usize + byte_class])
+        } else if state_ptr & STATE_SAVE != 0 {
+            // No state should ever have both the SAVE and MATCH
+            // flags set.
+            debug_assert!(state_ptr & STATE_MATCH == 0);
+
+            let state_idx = (state_ptr & STATE_MAX) as usize;
+
+            // the second save entry is filled with the save slots
+            // that we need to fill.
+            let slot_idx = self.table[state_idx + self.num_byte_classes];
+            slots[slot_idx as usize] = Some(at);
+
+            (at, self.table[state_idx + byte_class])
+        } else {
+            (at, state_ptr)
+        }
+    }
+    */
+
+    /*
+    #[inline]
+    fn exec_prefix(&self, text: &[u8], mut at: usize) -> (StatePtr, usize) {
+        match self.prefix {
+            None => (self.start_state, at),
+            Some(ref transitions) => {
+                while at < text.len() {
+                    let byte_class = self.byte_classes[text[at] as usize];
+                    let to = transitions[byte_class as usize];
+                    if to != STATE_DEAD {
+                        return (to, at);
                     }
+                    at += 1;
+                }
+                (STATE_POISON, at)
+            }
+        }
+    }
+    */
 
-                    // the forwarding table
-                    self.table.extend(save_transitions);
+    fn fmt_line(
+        addr: String,
+        trans: &[StatePtr],
+        f: &mut fmt::Formatter,
+    ) -> Result<(), fmt::Error> {
+        try!(writeln!(f, "{}: {}", addr,
+                trans.iter().enumerate()
+                     .map(|(i, x)| format!("{}/{}", i, st_str(*x)))
+                     .collect::<Vec<String>>()
+                     .join(" | ")));
+        Ok(())
+    }
+}
+
+enum OnePassMatch {
+    Match,
+    NoMatch(usize),
+}
+
+/// A OnePass DFA.
+#[derive(Debug)]
+pub struct OnePassCompiler<'a> {
+    onepass: OnePass,
+    /// A table mapping instruction indicies to compiled state
+    /// pointers.
+    ///
+    /// If a state has not yet been compiled,
+    /// then compiled[inst_idx] == STATE_POISON
+    compiled: Vec<StatePtr>,
+    /// A mapping from yet-to-be-compiled instruction indicies
+    /// to indicies into the transition table that want to point
+    /// to them.
+    holes: HashMap<usize, Vec<usize>>,
+    /// A mapping from yet-to-be-compiled instruction indicies
+    /// to state transition tables that need to be forwarded to
+    /// the given save state.
+    ///
+    /// The logic for filling in a save hole is slightly different
+    /// from the logic for filling in a standard hole, which is
+    /// why they are kept in different tables.
+    save_holes: HashMap<usize, Vec<usize>>,
+    prog: &'a Program,
+}
+
+impl<'a> OnePassCompiler<'a> {
+    /// Create a new OnePassCompiler to compile the given program
+    pub fn new(prog: &'a Program) -> Self {
+        OnePassCompiler {
+            onepass: OnePass {
+                table: vec![],
+                num_byte_classes: (prog.byte_classes[255] as usize) + 1,
+                byte_classes: prog.byte_classes.clone(),
+                start_state: 0,
+                is_anchored_end: prog.is_anchored_end,
+                is_anchored_start: prog.is_anchored_start,
+            },
+            compiled: vec![STATE_POISON; prog.insts.len()],
+            holes: HashMap::new(),
+            save_holes: HashMap::new(),
+            prog: prog,
+        }
+    }
+
+    // TODO: what is with that trailing dead state??? It doesn't seem to
+    // impact correctness.
+    //
+    // I think I need to put a leading /[^fset]*/ if we are not anchored
+    // at the start
+    //
+    /// Attempt to compile a regex into a one-pass DFA
+    pub fn compile(mut self) -> Result<OnePass, OnePassError> {
+        trace!("OnePassCompiler::compile\n{:?}", self.prog);
+        try!(Self::check_can_exec(self.prog));
+        // OnePassCompilers are single use
+        debug_assert!(self.holes.len() == 0);
+        debug_assert!(self.save_holes.len() == 0);
+
+        // start the ball rolling
+        self.emit_transitions(0);
+        self.onepass.start_state = self.compiled[0];
+
+        while self.holes.len() > 0 || self.save_holes.len() > 0 {
+            let idx = *self.holes.keys().nth(0)
+                .unwrap_or_else(|| self.save_holes.keys().nth(0).unwrap());
+            self.emit_transitions(idx);
+        }
+
+        Ok(self.onepass)
+    }
+
+    /// Emit the transition table for the state represented by the
+    /// given instruction
+    fn emit_transitions(&mut self, inst_idx: usize) {
+        let mut p = self.onepass.table.len() as StatePtr;
+        let mut transitions = vec![STATE_DEAD; self.onepass.num_byte_classes];
+
+        let mut resume = match &self.prog[inst_idx] {
+            &Inst::Match(_) => {
+                p = STATE_MATCH;
+                vec![] // no kids
+            }
+            &Inst::Save(ref inst) => {
+                p |= STATE_SAVE;
+                vec![inst.goto]
+            }
+            &Inst::EmptyLook(ref inst) => vec![inst.goto],
+            &Inst::Bytes(ref inst) => vec![inst.goto],
+            &Inst::Split(ref inst) => vec![inst.goto2, inst.goto1],
+            &Inst::Char(_) | &Inst::Ranges(_) => unreachable!(),
+        };
+
+        while let Some(child_idx) = resume.pop() {
+            match &self.prog[child_idx] {
+                &Inst::Match(_) => {
+                    // match instructions had better be only children
+                    // in a one-pass regex
+                    debug_assert!(
+                        transitions.iter().all(|to| *to == STATE_DEAD));
+
+                    for i in 0..transitions.len() {
+                        self.transition_to(&mut transitions, i, child_idx);
+                    }
+                    break;
+                }
+                &Inst::Save(_) => {
+                    self.transition_to_save(
+                        &mut transitions, p, child_idx);
                 }
                 &Inst::Split(ref inst) => {
                     resume.push(inst.goto2);
                     resume.push(inst.goto1);
                 }
                 &Inst::EmptyLook(ref inst) => {
-                    // This is definitly doable with an intermediary state,
-                    // but the normal DFA does something with flags that
-                    // I should probably ask @burntsushi about.
-                    // For now, we just skip them.
-                    //
                     // TODO: emptylook
                     resume.push(inst.goto);
                 }
                 &Inst::Bytes(ref inst) => {
-                    let mut bytes_transitions =
-                        vec![STATE_DEAD; self.num_byte_classes];
-                    self.build_transition_table(
-                        prog, inst.goto, &mut bytes_transitions);
-
-                    let p = self.table.len() as StatePtr;
-                    self.table.extend(bytes_transitions);
-
-                    let byte_class = prog.byte_classes[inst.start as usize];
-                    transitions[byte_class as usize] = p;
+                    let byte_class =
+                        self.onepass.byte_classes[inst.start as usize] as usize;
+                    self.transition_to(&mut transitions, byte_class, child_idx);
                 }
                 &Inst::Char(_) | &Inst::Ranges(_) => unreachable!(),
             }
         }
+
+        self.onepass.table.extend(transitions);
+
+        if let &Inst::Save(ref inst) = &self.prog[inst_idx] {
+            self.onepass.table.extend(
+                vec![inst.slot as StatePtr; self.onepass.num_byte_classes]);
+        }
+
+        self.patch_hole(inst_idx, p);
+    }
+
+    /// Patch any holes which want to point to `inst_idx` with `sp`.
+    ///
+    /// patch_holes is idempotent
+    fn patch_hole(&mut self, inst_idx: usize, sp: StatePtr) {
+        if self.compiled[inst_idx] != STATE_POISON {
+            debug_assert!(self.compiled[inst_idx] == sp);
+        } else {
+            self.compiled[inst_idx] = sp;
+        }
+
+        match &self.prog[inst_idx] {
+            &Inst::Save(_) => {
+                match self.save_holes.remove(&inst_idx) {
+                    None => (),
+                    Some(hs) => {
+                        for h in hs.into_iter() {
+                            self.patch_save_hole(h, sp);
+
+                            // TODO: recursivly patch holes
+                        }
+                    }
+                }
+            }
+            _ => {
+                match self.holes.remove(&inst_idx) {
+                    Some(hs) => {
+                        for h in hs.into_iter() {
+                            self.onepass.table[h] = sp;
+                            // TODO: recursivly patch holes
+                        }
+                    }
+                    None => (),
+                }
+            }
+        }
+    }
+
+    fn patch_save_hole(&mut self, hole: usize, sp: StatePtr) {
+        let save_idx = (sp & STATE_MAX) as usize;
+        let save_contains_holes = self.save_holes.contains(&save_idx)
+            || (save_idx..(save_idx+self.onepass.num_byte_classes)).any(|i|
+                    self.holes.contains(&i));
+
+        if !save_contains_holes {
+            let s = Vec::from(self.transition_table_of(sp));
+            let from = 
+                &mut self.onepass.table[hole..(hole + self.onepass.num_byte_classes)];
+            Self::forward_to_save(from, &s, sp);
+        }
+    }
+
+    /// Add an edge flowing from `from` to `to`.
+    ///
+    /// `transitions` is a slice into the global transition table
+    /// representing the transitions for the next state to be pushed
+    /// to the global table.
+    ///
+    /// `from` is a byte class index within `transitions`
+    ///
+    /// `to` is the index of the instruction which corrisponds to the
+    /// target state.
+    fn transition_to(
+        &mut self,
+        transitions: &mut [StatePtr],
+        from: usize,
+        to: usize,
+    ) {
+        if self.compiled[to] != STATE_POISON {
+            transitions[from] = self.compiled[to];
+        } else {
+            transitions[from] = STATE_POISON;
+            self.holes.entry(to).or_insert(vec![])
+                      .push(self.onepass.table.len() + from);
+        }
+    }
+
+    /// Add an edge from `from` to `to` where `to` is a save state.
+    ///
+    /// `from` is the slice of the global transition table corresponding
+    /// to the state that wants to transition to the save state.
+    ///
+    /// `from_idx` is the index that will point to `from` once `from`
+    /// has been pushed to the global transition table. We need this
+    /// in order to construct a save hole.
+    ///
+    /// `to` is the index of the save instruction that we wish to transition
+    /// to.
+    ///
+    /// Save states are somewhat special. When a state sees a save
+    /// instruction among its children, it must transition to it,
+    /// but there is no obvious byte class to use for doing so.
+    /// Instead, it must transition to the save state on any byte
+    /// class that the save state will not die on. If the save
+    /// state had already been compiled, this is easy. We just
+    /// look up the transitions for the save state and copy
+    /// them over. On the other hand, if the save state has
+    /// yet to be compiled, we have to defer this action though
+    /// the use of a save hole.
+    fn transition_to_save(
+        &mut self,
+        // the transitions to forward to the given save instruction
+        from: &mut [StatePtr],
+        // the index forward_transitions will have once it is pushed
+        from_idx: StatePtr,
+        // the save instruction to forward to
+        to: usize,
+    ) {
+        let from_idx = (from_idx & STATE_MAX) as usize;
+        debug_assert!(from_idx % self.onepass.num_byte_classes == 0);
+
+        if self.compiled[to] != STATE_POISON {
+            // We could probably avoid an allocation with split_at_mut,
+            // but that seems a bit extra
+            let s_ts = Vec::from(self.transition_table_of(self.compiled[to]));
+            Self::forward_to_save(from, &s_ts, self.compiled[to]);
+        } else {
+            self.save_holes.entry(to).or_insert(vec![]).push(from_idx);
+        }
+    }
+
+    /// Forward a state to a given save state.
+    fn forward_to_save(
+        transitions: &mut [StatePtr],
+        save_transitions: &[StatePtr],
+        // the pointer to the save transition table
+        save_ptr: StatePtr,
+    ) {
+        debug_assert!(save_ptr & STATE_SAVE != 0);
+
+        for (i, t) in transitions.iter_mut().enumerate() {
+            if save_transitions[i] != STATE_DEAD {
+                // overlaps mean it is not one-pass
+                debug_assert!(*t == STATE_DEAD);
+
+                *t = save_ptr;
+            }
+        }
+    }
+
+    /// returns the subslice into the global transition table that
+    /// is relevant to the given state
+    fn transition_table_of(&self, st: StatePtr) -> &[StatePtr] {
+        let start = (st & STATE_MAX) as usize;
+        let end = start + self.onepass.num_byte_classes;
+        &self.onepass.table[start..end]
     }
 
     /// Check if we can execute this program.
@@ -223,47 +596,25 @@ impl OnePass {
         }
     }
 
-    /// Execute the one-pass DFA, populating the list of capture slots
-    /// as you go.
-    ///
-    /// TODO: ask @burntsushi about doing the right thing WRT regexsets
-    ///       here.
-    #[inline]
-    pub fn exec(&self, slots: &mut [Slot], text: &[u8]) -> bool {
-        let mut at = 0;
-        let mut state_ptr = self.start_state;
-        while at < text.len() {
-            debug_assert!(state_ptr != STATE_POISON);
-
-            if state_ptr & STATE_SPECIAL == 0 {
-                let byte_class = self.byte_classes[text[at] as usize];
-                state_ptr = self.table[
-                    (state_ptr & STATE_MAX) as usize + byte_class as usize];
-            } else if state_ptr == STATE_DEAD {
-                return false;
-            } else if state_ptr & STATE_SAVE != 0 {
-                let last = at - 1;
-                let slot_idx = self.table[(state_ptr & STATE_MAX) as usize];
-                slots[slot_idx as usize] = Some(last);
-                let byte_class = self.byte_classes[text[last] as usize];
-                state_ptr = self.table[ ((state_ptr & STATE_MAX) as usize
-                                          + self.num_byte_classes
-                                          + byte_class as usize) as usize];
-                continue; // no need to advance the string pointer again
-            } else if state_ptr & STATE_MATCH != 0 {
-                return true;
-            }
-
-            at += 1;
-        }
-
-        false
-    }
-
-
 }
 
 type StatePtr = u32;
+
+fn st_str(st: StatePtr) -> String {
+    if st == STATE_DEAD {
+        "D".to_string()
+    } else if st == STATE_POISON {
+        "P".to_string()
+    } else {
+        if st & STATE_SAVE != 0 {
+            format!("({:x})", st & STATE_MAX)
+        } else if st & STATE_MATCH != 0 {
+            "M".to_string()
+        } else {
+            format!("{:x}", st & STATE_MAX)
+        }
+    }
+}
 
 /// The CAP_SAVE state means that the DFA should save the current
 /// string pointer in a capture slot indicated by the first entry
@@ -285,12 +636,16 @@ const STATE_DEAD: StatePtr = STATE_SAVE + 1;
 /// A poison state is used to fill in the transition table in places where
 /// it would not make sense to have a real state pointer.
 ///
+/// This is a valid poison value because both the SAVE and MATCH flags
+/// cannot be set at the same time.
+///
 /// It is not valid to dereference STATE_POISON.
-const STATE_POISON: StatePtr = STATE_DEAD + 1;
+const STATE_POISON: StatePtr = !0;
 
 /// A match state means that the regex has successfully matched.
 ///
-/// Note that match states have their lower bits set to a state pointer.
+/// It is not valid to dereference STATE_MATCH. We use a header
+/// bitflag anyway to facilitate special case checking.
 const STATE_MATCH: StatePtr = 1 << 30;
 
 /// The maximum state pointer. This is useful to mask out the "valid" state

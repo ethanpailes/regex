@@ -674,6 +674,6 @@ pub mod internal {
     pub use input::{Char, Input, CharInput, InputAt};
     pub use literals::LiteralSearcher;
     pub use prog::{Program, Inst, EmptyLook, InstRanges};
-    pub use onepass::OnePass;
+    pub use onepass::{OnePass, OnePassCompiler};
     pub use analisys::is_one_pass;
 }

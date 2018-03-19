@@ -209,7 +209,7 @@ fn cmd_compile(args: &Args) -> Result<()> {
     if args.flag_onepass {
         prog.is_one_pass = 
             exprs.iter().all(|e| regex::internal::is_one_pass(e));
-        match regex::internal::OnePass::compile(&prog) {
+        match regex::internal::OnePassCompiler::new(&prog).compile() {
             Ok(op) => println!("{}", op),
             Err(e) => println!("{:?}", e),
         }

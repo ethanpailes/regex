@@ -62,7 +62,7 @@ mat!(greedy_range_min_many, r"((?:.*){1,})=", "a=b", Some((0, 2)));
 mat!(greedy_range_many, r"((?:.*){1,2})=", "a=b", Some((0, 2)));
 
 // Test that we handle various flavors of empty expressions.
-matiter!(match_empty1, r"", "", (0, 0));
+matiter!(match_empty1_, r"", "", (0, 0));
 matiter!(match_empty2, r"", "abc", (0, 0), (1, 1), (2, 2), (3, 3));
 matiter!(match_empty3, r"()", "abc", (0, 0), (1, 1), (2, 2), (3, 3));
 matiter!(match_empty4, r"()*", "abc", (0, 0), (1, 1), (2, 2), (3, 3));

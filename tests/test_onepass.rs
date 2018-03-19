@@ -16,7 +16,7 @@ extern crate regex;
 macro_rules! regex_new {
     ($re:expr) => {{
         use regex::internal::ExecBuilder;
-        ExecBuilder::new($re).onepass().build().map(|e| e.into_regex())
+        ExecBuilder::new($re).onepass().bytes(true).build().map(|e| e.into_regex())
     }}
 }
 
@@ -29,7 +29,7 @@ macro_rules! regex {
 macro_rules! regex_set_new {
     ($re:expr) => {{
         use regex::internal::ExecBuilder;
-        ExecBuilder::new_many($re).onepass().build().map(|e| e.into_regex_set())
+        ExecBuilder::new_many($re).onepass().bytes(true).build().map(|e| e.into_regex_set())
     }}
 }
 

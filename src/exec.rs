@@ -33,7 +33,7 @@ use re_set;
 use re_trait::{RegularExpression, Slot, Locations, as_slots};
 use re_unicode;
 use utf8::next_utf8;
-use onepass::OnePass;
+use onepass::{OnePass, OnePassCompiler};
 
 /// `Exec` manages the execution of a regular expression.
 ///
@@ -348,7 +348,7 @@ impl ExecBuilder {
 
         let mut ro = ExecReadOnly {
             res: self.options.pats,
-            onepass: OnePass::compile(&nfa).ok(),
+            onepass: OnePassCompiler::new(&nfa).compile().ok(),
             nfa: nfa,
             dfa: dfa,
             dfa_reverse: dfa_reverse,
@@ -455,8 +455,11 @@ impl<'c> RegularExpression for ExecNoSync<'c> {
                 match self.ro.onepass {
                     Some(ref op) => {
                         let mut slots = vec![None; self.slots_len()];
-                        op.exec(&mut slots, &text[start..]);
-                        slots[1].and_then(|_| slots[0])
+                        if op.exec(&mut slots, text, start) {
+                            slots[1].and_then(|_| slots[0])
+                        } else {
+                            None
+                        }
                     }
                     None => unreachable!(),
                 }
@@ -515,8 +518,11 @@ impl<'c> RegularExpression for ExecNoSync<'c> {
                 match self.ro.onepass {
                     Some(ref op) => {
                         let mut slots = vec![None; self.slots_len()];
-                        op.exec(&mut slots, &text[start..]);
-                        slots[0].is_some() && slots[1].is_some()
+                        if op.exec(&mut slots, text, start) {
+                            slots[0].is_some() && slots[1].is_some()
+                        } else {
+                            false
+                        }
                     }
                     None => unreachable!(),
                 }
@@ -570,8 +576,11 @@ impl<'c> RegularExpression for ExecNoSync<'c> {
                 match self.ro.onepass {
                     Some(ref op) => {
                         let mut slots = vec![None; self.slots_len()];
-                        op.exec(&mut slots, &text[start..]);
-                        slots[0].and_then(|s1| slots[1].map(|s2| (s1, s2)))
+                        if op.exec(&mut slots, text, start) {
+                            slots[0].and_then(|s1| slots[1].map(|s2| (s1, s2)))
+                        } else {
+                            None
+                        }
                     }
                     None => unreachable!(),
                 }
@@ -660,8 +669,11 @@ impl<'c> RegularExpression for ExecNoSync<'c> {
 
                 match self.ro.onepass {
                     Some(ref op) => {
-                        op.exec(&mut slots, &text[start..]);
-                        slots[0].and_then(|s1| slots[1].map(|s2| (s1, s2)))
+                        if op.exec(&mut slots, text, start) {
+                            slots[0].and_then(|s1| slots[1].map(|s2| (s1, s2)))
+                        } else {
+                            None
+                        }
                     }
                     None => unreachable!(),
                 }
