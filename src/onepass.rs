@@ -248,6 +248,9 @@ pub struct OnePassCompiler<'a> {
     /// from the logic for filling in a standard hole, which is
     /// why they are kept in different tables.
     save_holes: HashMap<usize, Vec<usize>>,
+    /// A table mapping holes (both standard and save) to their contain states.
+    hole_states: Vec<usize>,
+    /// The program to be compiled.
     prog: &'a Program,
 }
 
@@ -263,9 +266,10 @@ impl<'a> OnePassCompiler<'a> {
                 is_anchored_end: prog.is_anchored_end,
                 is_anchored_start: prog.is_anchored_start,
             },
-            compiled: vec![STATE_POISON; prog.insts.len()],
+            compiled: vec![STATE_POISON; prog.len()],
             holes: HashMap::new(),
             save_holes: HashMap::new(),
+            hole_states: Vec::with_capacity(prog.len()),
             prog: prog,
         }
     }
@@ -289,7 +293,8 @@ impl<'a> OnePassCompiler<'a> {
         self.onepass.start_state = self.compiled[0];
 
         while self.holes.len() > 0 || self.save_holes.len() > 0 {
-            trace!("holes={:?} save_holes={:?}", self.holes, self.save_holes);
+            trace!("::compile loop holes={:?} save_holes={:?}",
+                        self.holes, self.save_holes);
 
             let hs = self.holes.keys().map(|x| *x).collect::<Vec<_>>();
             for k in hs.into_iter() {
@@ -301,6 +306,7 @@ impl<'a> OnePassCompiler<'a> {
                 self.emit_transitions(k);
             }
         }
+        // TODO: can there be a cyclic set of save holes?
 
         Ok(self.onepass)
     }
@@ -310,11 +316,16 @@ impl<'a> OnePassCompiler<'a> {
     fn emit_transitions(&mut self, inst_idx: usize) {
         trace!("::emit_transitions inst_idx={}", inst_idx);
         if self.compiled[inst_idx] != STATE_POISON {
+            // don't double compile anything
+            // TODO: assert instead?
+            let p = self.compiled[inst_idx];
+            self.patch_hole(inst_idx, p);
             return;
         }
 
         let mut p = self.onepass.table.len() as StatePtr;
         let mut transitions = vec![STATE_DEAD; self.onepass.num_byte_classes];
+        self.hole_states.extend(vec![0; self.onepass.num_byte_classes]);
 
         let mut resume = match &self.prog[inst_idx] {
             &Inst::Match(_) => {
@@ -341,13 +352,14 @@ impl<'a> OnePassCompiler<'a> {
                         transitions.iter().all(|to| *to == STATE_DEAD));
 
                     for i in 0..transitions.len() {
-                        self.transition_to(&mut transitions, i, child_idx);
+                        self.transition_to(
+                            inst_idx, &mut transitions, i, child_idx);
                     }
                     break;
                 }
                 &Inst::Save(_) => {
                     self.transition_to_save(
-                        &mut transitions, p, child_idx);
+                        inst_idx, &mut transitions, p, child_idx);
                 }
                 &Inst::Split(ref inst) => {
                     resume.push(inst.goto2);
@@ -360,7 +372,8 @@ impl<'a> OnePassCompiler<'a> {
                 &Inst::Bytes(ref inst) => {
                     let byte_class =
                         self.onepass.byte_classes[inst.start as usize] as usize;
-                    self.transition_to(&mut transitions, byte_class, child_idx);
+                    self.transition_to(
+                        inst_idx, &mut transitions, byte_class, child_idx);
                 }
                 &Inst::Char(_) | &Inst::Ranges(_) => unreachable!(),
             }
@@ -371,6 +384,7 @@ impl<'a> OnePassCompiler<'a> {
         if let &Inst::Save(ref inst) = &self.prog[inst_idx] {
             self.onepass.table.extend(
                 vec![inst.slot as StatePtr; self.onepass.num_byte_classes]);
+            self.hole_states.extend(vec![0; self.onepass.num_byte_classes]);
         }
 
         self.patch_hole(inst_idx, p);
@@ -404,20 +418,16 @@ impl<'a> OnePassCompiler<'a> {
                 for h in hs.into_iter() {
                     self.onepass.table[h] = sp;
 
-                    let holy_state = h / self.onepass.num_byte_classes;
-                    trace!("h={} holy_state={}", h, holy_state);
-                    let holy_ptr = self.compiled[holy_state];
-                    debug_assert!(holy_ptr != STATE_POISON);
-                    self.patch_hole(holy_state, holy_ptr);
+                    self.try_patch_defered_save_hole(h);
                 }
             }
         }
     }
 
     fn patch_save_hole(&mut self, inst_idx: usize, sp: StatePtr) {
-        let save_idx = (sp & STATE_MAX) as usize;
-        let save_contains_holes = self.save_holes.contains_key(&save_idx)
-            || (save_idx..(save_idx+self.onepass.num_byte_classes)).any(|i|
+        // let save_idx = (sp & STATE_MAX) as usize;
+        let save_contains_holes = self.save_holes.contains_key(&inst_idx)
+            || (inst_idx..(inst_idx+self.onepass.num_byte_classes)).any(|i|
                     self.holes.contains_key(&i));
 
         if !save_contains_holes {
@@ -425,7 +435,6 @@ impl<'a> OnePassCompiler<'a> {
                 None => (),
                 Some(hs) => {
                     for h in hs.into_iter() {
-                        trace!("::patch_save_hole h={}", h);
                         {
                             let s = Vec::from(self.transition_table_of(sp));
                             let from =
@@ -433,13 +442,24 @@ impl<'a> OnePassCompiler<'a> {
                             Self::forward_to_save(from, &s, sp);
                         }
 
-                        let holy_state = h / self.onepass.num_byte_classes;
-                        let holy_ptr = self.compiled[holy_state];
-                        trace!("holy_state={}", holy_state);
-                        self.patch_hole(holy_state, holy_ptr);
+                        self.try_patch_defered_save_hole(h);
                     }
                 }
             }
+        }
+    }
+
+    /// After we have just patched `hole`, it might have made a save
+    /// hole fillable that was not previously fillable.
+    ///
+    fn try_patch_defered_save_hole(&mut self, hole: usize) {
+        trace!("::try_patch_defered_save_hole hole={}", hole);
+        let holy_state = self.hole_states[hole];
+        trace!("::try_patch_defered_save_hole holy_state={}", holy_state);
+        let holy_ptr = self.compiled[holy_state];
+        if holy_ptr != STATE_POISON
+            && self.save_holes.contains_key(&holy_state) {
+            self.patch_hole(holy_state, holy_ptr);
         }
     }
 
@@ -455,6 +475,7 @@ impl<'a> OnePassCompiler<'a> {
     /// target state.
     fn transition_to(
         &mut self,
+        inst_idx: usize,
         transitions: &mut [StatePtr],
         from: usize,
         to: usize,
@@ -463,8 +484,9 @@ impl<'a> OnePassCompiler<'a> {
             transitions[from] = self.compiled[to];
         } else {
             transitions[from] = STATE_POISON;
-            self.holes.entry(to).or_insert(vec![])
-                      .push(self.onepass.table.len() + from);
+            let hole = self.onepass.table.len() + from;
+            self.holes.entry(to).or_insert(vec![]).push(hole);
+            self.hole_states[hole] = inst_idx;
         }
     }
 
@@ -473,7 +495,7 @@ impl<'a> OnePassCompiler<'a> {
     /// `from` is the slice of the global transition table corresponding
     /// to the state that wants to transition to the save state.
     ///
-    /// `from_idx` is the index that will point to `from` once `from`
+    /// `from_ptr` is the pointer that will point to `from` once `from`
     /// has been pushed to the global transition table. We need this
     /// in order to construct a save hole.
     ///
@@ -492,14 +514,17 @@ impl<'a> OnePassCompiler<'a> {
     /// the use of a save hole.
     fn transition_to_save(
         &mut self,
+        inst_idx: usize,
         // the transitions to forward to the given save instruction
         from: &mut [StatePtr],
-        // the index forward_transitions will have once it is pushed
-        from_idx: StatePtr,
+        // the pointer forward_transitions will have once it is pushed
+        from_ptr: StatePtr,
         // the save instruction to forward to
         to: usize,
     ) {
-        let from_idx = (from_idx & STATE_MAX) as usize;
+        trace!("::transition_to_save from={} to={}", st_str(from_ptr), to);
+
+        let from_idx = (from_ptr & STATE_MAX) as usize;
         debug_assert!(from_idx % self.onepass.num_byte_classes == 0);
 
         if self.compiled[to] != STATE_POISON {
@@ -509,6 +534,7 @@ impl<'a> OnePassCompiler<'a> {
             Self::forward_to_save(from, &s_ts, self.compiled[to]);
         } else {
             self.save_holes.entry(to).or_insert(vec![]).push(from_idx);
+            self.hole_states[from_idx] = inst_idx;
         }
     }
 
