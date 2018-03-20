@@ -106,7 +106,8 @@ impl OnePass {
                     OnePassMatch::Match => return true,
                     OnePassMatch::NoMatch(last) => {
                         // TODO: this will probably dominate the runtime
-                        //       cost. I need previews or something.
+                        //       cost. I need a [^fset]* prefix machine
+                        //       to make this a bit more bearable.
                         for s in slots.iter_mut() {
                             *s = None;
                         }
@@ -206,63 +207,6 @@ impl OnePass {
         }
     }
 
-    /*
-    #[inline]
-    fn step(
-        &self,
-        slots: &mut [Slot],
-        text: &[u8],
-        state_ptr: StatePtr,
-        at: usize,
-        byte_class: usize,
-    ) -> (usize, StatePtr) {
-        debug_assert!(at <= text.len());
-        debug_assert!(byte_class == self.num_byte_classes - 1 ||
-            byte_class == self.byte_classes[text[at] as usize] as usize);
-
-        if state_ptr & STATE_SPECIAL == 0 {
-            // no flags are set so we don't need to mask them away
-            // with STATE_MAX
-            (at + 1, self.table[state_ptr as usize + byte_class])
-        } else if state_ptr & STATE_SAVE != 0 {
-            // No state should ever have both the SAVE and MATCH
-            // flags set.
-            debug_assert!(state_ptr & STATE_MATCH == 0);
-
-            let state_idx = (state_ptr & STATE_MAX) as usize;
-
-            // the second save entry is filled with the save slots
-            // that we need to fill.
-            let slot_idx = self.table[state_idx + self.num_byte_classes];
-            slots[slot_idx as usize] = Some(at);
-
-            (at, self.table[state_idx + byte_class])
-        } else {
-            (at, state_ptr)
-        }
-    }
-    */
-
-    /*
-    #[inline]
-    fn exec_prefix(&self, text: &[u8], mut at: usize) -> (StatePtr, usize) {
-        match self.prefix {
-            None => (self.start_state, at),
-            Some(ref transitions) => {
-                while at < text.len() {
-                    let byte_class = self.byte_classes[text[at] as usize];
-                    let to = transitions[byte_class as usize];
-                    if to != STATE_DEAD {
-                        return (to, at);
-                    }
-                    at += 1;
-                }
-                (STATE_POISON, at)
-            }
-        }
-    }
-    */
-
     fn fmt_line(
         addr: String,
         trans: &[StatePtr],
@@ -345,9 +289,17 @@ impl<'a> OnePassCompiler<'a> {
         self.onepass.start_state = self.compiled[0];
 
         while self.holes.len() > 0 || self.save_holes.len() > 0 {
-            let idx = *self.holes.keys().nth(0)
-                .unwrap_or_else(|| self.save_holes.keys().nth(0).unwrap());
-            self.emit_transitions(idx);
+            trace!("holes={:?} save_holes={:?}", self.holes, self.save_holes);
+
+            let hs = self.holes.keys().map(|x| *x).collect::<Vec<_>>();
+            for k in hs.into_iter() {
+                self.emit_transitions(k);
+            }
+
+            let hs = self.save_holes.keys().map(|x| *x).collect::<Vec<_>>();
+            for k in hs.into_iter() {
+                self.emit_transitions(k);
+            }
         }
 
         Ok(self.onepass)
@@ -356,11 +308,17 @@ impl<'a> OnePassCompiler<'a> {
     /// Emit the transition table for the state represented by the
     /// given instruction
     fn emit_transitions(&mut self, inst_idx: usize) {
+        trace!("::emit_transitions inst_idx={}", inst_idx);
+        if self.compiled[inst_idx] != STATE_POISON {
+            return;
+        }
+
         let mut p = self.onepass.table.len() as StatePtr;
         let mut transitions = vec![STATE_DEAD; self.onepass.num_byte_classes];
 
         let mut resume = match &self.prog[inst_idx] {
             &Inst::Match(_) => {
+                trace!("::emit_transitions match state");
                 p = STATE_MATCH;
                 vec![] // no kids
             }
@@ -418,10 +376,15 @@ impl<'a> OnePassCompiler<'a> {
         self.patch_hole(inst_idx, p);
     }
 
-    /// Patch any holes which want to point to `inst_idx` with `sp`.
+    /// Patch any holes which want to point to `inst_idx` with `sp`
+    /// and updates self.compiled to include the new state.
     ///
-    /// patch_holes is idempotent
+    /// patch_holes is idempotent.
     fn patch_hole(&mut self, inst_idx: usize, sp: StatePtr) {
+        trace!("::patch_hole inst_idx={} sp={}",
+                    inst_idx, st_str(sp));
+        debug_assert!(sp != STATE_POISON);
+
         if self.compiled[inst_idx] != STATE_POISON {
             debug_assert!(self.compiled[inst_idx] == sp);
         } else {
@@ -429,43 +392,54 @@ impl<'a> OnePassCompiler<'a> {
         }
 
         match &self.prog[inst_idx] {
-            &Inst::Save(_) => {
-                match self.save_holes.remove(&inst_idx) {
-                    None => (),
-                    Some(hs) => {
-                        for h in hs.into_iter() {
-                            self.patch_save_hole(h, sp);
+            &Inst::Save(_) => self.patch_save_hole(inst_idx, sp),
+            _ => self.patch_standard_hole(inst_idx, sp),
+        }
+    }
 
-                            // TODO: recursivly patch holes
-                        }
-                    }
-                }
-            }
-            _ => {
-                match self.holes.remove(&inst_idx) {
-                    Some(hs) => {
-                        for h in hs.into_iter() {
-                            self.onepass.table[h] = sp;
-                            // TODO: recursivly patch holes
-                        }
-                    }
-                    None => (),
+    fn patch_standard_hole(&mut self, inst_idx: usize, sp: StatePtr) {
+        match self.holes.remove(&inst_idx) {
+            None => (),
+            Some(hs) => {
+                for h in hs.into_iter() {
+                    self.onepass.table[h] = sp;
+
+                    let holy_state = h / self.onepass.num_byte_classes;
+                    trace!("h={} holy_state={}", h, holy_state);
+                    let holy_ptr = self.compiled[holy_state];
+                    debug_assert!(holy_ptr != STATE_POISON);
+                    self.patch_hole(holy_state, holy_ptr);
                 }
             }
         }
     }
 
-    fn patch_save_hole(&mut self, hole: usize, sp: StatePtr) {
+    fn patch_save_hole(&mut self, inst_idx: usize, sp: StatePtr) {
         let save_idx = (sp & STATE_MAX) as usize;
-        let save_contains_holes = self.save_holes.contains(&save_idx)
+        let save_contains_holes = self.save_holes.contains_key(&save_idx)
             || (save_idx..(save_idx+self.onepass.num_byte_classes)).any(|i|
-                    self.holes.contains(&i));
+                    self.holes.contains_key(&i));
 
         if !save_contains_holes {
-            let s = Vec::from(self.transition_table_of(sp));
-            let from = 
-                &mut self.onepass.table[hole..(hole + self.onepass.num_byte_classes)];
-            Self::forward_to_save(from, &s, sp);
+            match self.save_holes.remove(&inst_idx) {
+                None => (),
+                Some(hs) => {
+                    for h in hs.into_iter() {
+                        trace!("::patch_save_hole h={}", h);
+                        {
+                            let s = Vec::from(self.transition_table_of(sp));
+                            let from =
+                                self.transition_table_of_mut(h as StatePtr);
+                            Self::forward_to_save(from, &s, sp);
+                        }
+
+                        let holy_state = h / self.onepass.num_byte_classes;
+                        let holy_ptr = self.compiled[holy_state];
+                        trace!("holy_state={}", holy_state);
+                        self.patch_hole(holy_state, holy_ptr);
+                    }
+                }
+            }
         }
     }
 
@@ -561,8 +535,18 @@ impl<'a> OnePassCompiler<'a> {
     /// is relevant to the given state
     fn transition_table_of(&self, st: StatePtr) -> &[StatePtr] {
         let start = (st & STATE_MAX) as usize;
+        debug_assert!(start % self.onepass.num_byte_classes == 0);
         let end = start + self.onepass.num_byte_classes;
         &self.onepass.table[start..end]
+    }
+
+    /// returns the subslice into the global transition table that
+    /// is relevant to the given state
+    fn transition_table_of_mut(&mut self, st: StatePtr) -> &mut [StatePtr] {
+        let start = (st & STATE_MAX) as usize;
+        debug_assert!(start % self.onepass.num_byte_classes == 0);
+        let end = start + self.onepass.num_byte_classes;
+        &mut self.onepass.table[start..end]
     }
 
     /// Check if we can execute this program.
