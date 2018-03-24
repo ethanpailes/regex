@@ -18,7 +18,7 @@ a few nice properties that we can leverage.
        be implemented right in the DFA.
 */
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use std::fmt;
 use prog::{Program, Inst};
@@ -145,29 +145,31 @@ impl OnePass {
         while at < text.len() {
             debug_assert!(state_ptr != STATE_POISON);
             let byte_class = self.byte_classes[text[at] as usize] as usize;
-            trace!("::exec loop st={} bc={}", st_str(state_ptr), byte_class);
+            trace!("::exec loop st={} at={} bc={}",
+                        st_str(state_ptr), at, byte_class);
 
             if state_ptr & STATE_SPECIAL == 0 {
                 state_ptr = self.table[state_ptr as usize + byte_class];
             } else if state_ptr == STATE_DEAD {
                 return OnePassMatch::NoMatch(at);
-            } else if state_ptr & STATE_SAVE != 0 {
-                // No state should ever have both the SAVE and MATCH
-                // flags set.
-                debug_assert!(state_ptr & STATE_MATCH == 0);
-
-                let state_idx = (state_ptr & STATE_MAX) as usize;
-
-                // the second save entry is filled with the save slots
-                // that we need to fill.
-                let slot_idx = self.table[state_idx + self.num_byte_classes];
-                slots[slot_idx as usize] = Some(at);
-
-                state_ptr = self.table[state_idx + byte_class];
-                continue;
             } else if state_ptr == STATE_MATCH {
                 if self.is_anchored_end {
                     return OnePassMatch::Match;
+                }
+            } else {
+                while state_ptr & STATE_SAVE != 0 {
+                    // No state should ever have both the SAVE and MATCH
+                    // flags set.
+                    debug_assert!(state_ptr & STATE_MATCH == 0);
+
+                    let state_idx = (state_ptr & STATE_MAX) as usize;
+
+                    // the second save entry is filled with the save slots
+                    // that we need to fill.
+                    let slot_idx = self.table[state_idx + self.num_byte_classes];
+                    slots[slot_idx as usize] = Some(at);
+
+                    state_ptr = self.table[state_idx + byte_class];
                 }
             }
 
@@ -176,12 +178,12 @@ impl OnePass {
 
         // set the byte class to be EOF
         let byte_class = self.num_byte_classes - 1;
-        loop {
-            trace!("::exec eof st={} bc={}", st_str(state_ptr), byte_class);
-
-            if state_ptr & STATE_SPECIAL == 0 {
-                state_ptr = self.table[state_ptr as usize + byte_class];
-            } else if state_ptr & STATE_SAVE != 0 {
+        trace!("::exec eof st={} bc={}", st_str(state_ptr), byte_class);
+        if state_ptr & STATE_SPECIAL == 0 {
+            state_ptr = self.table[state_ptr as usize + byte_class];
+        } else {
+            while state_ptr & STATE_SAVE != 0 {
+                trace!("::exec eof save");
                 // No state should ever have both the SAVE and MATCH
                 // flags set.
                 debug_assert!(state_ptr & STATE_MATCH == 0);
@@ -194,10 +196,7 @@ impl OnePass {
                 slots[slot_idx as usize] = Some(at);
 
                 state_ptr = self.table[state_idx + byte_class];
-                continue;
             }
-
-            break;
         }
 
         if state_ptr == STATE_MATCH {
@@ -248,6 +247,7 @@ pub struct OnePassCompiler<'a> {
     /// from the logic for filling in a standard hole, which is
     /// why they are kept in different tables.
     save_holes: HashMap<usize, Vec<usize>>,
+    needs_save_patch: HashSet<usize>,
     /// A table mapping holes (both standard and save) to their contain states.
     hole_states: Vec<usize>,
     /// The program to be compiled.
@@ -269,6 +269,7 @@ impl<'a> OnePassCompiler<'a> {
             compiled: vec![STATE_POISON; prog.len()],
             holes: HashMap::new(),
             save_holes: HashMap::new(),
+            needs_save_patch: HashSet::new(),
             hole_states: Vec::with_capacity(prog.len()),
             prog: prog,
         }
@@ -339,7 +340,7 @@ impl<'a> OnePassCompiler<'a> {
             }
             &Inst::EmptyLook(ref inst) => vec![inst.goto],
             &Inst::Bytes(ref inst) => vec![inst.goto],
-            &Inst::Split(ref inst) => vec![inst.goto2, inst.goto1],
+            &Inst::Split(ref inst) => vec![inst.goto1, inst.goto2],
             &Inst::Char(_) | &Inst::Ranges(_) => unreachable!(),
         };
 
@@ -362,8 +363,10 @@ impl<'a> OnePassCompiler<'a> {
                         inst_idx, &mut transitions, p, child_idx);
                 }
                 &Inst::Split(ref inst) => {
-                    resume.push(inst.goto2);
+                    // We flip the priority here so that higher priority
+                    // saves will overwrite lower priority saves.
                     resume.push(inst.goto1);
+                    resume.push(inst.goto2);
                 }
                 &Inst::EmptyLook(ref inst) => {
                     // TODO: emptylook
@@ -425,10 +428,16 @@ impl<'a> OnePassCompiler<'a> {
     }
 
     fn patch_save_hole(&mut self, inst_idx: usize, sp: StatePtr) {
-        // let save_idx = (sp & STATE_MAX) as usize;
-        let save_contains_holes = self.save_holes.contains_key(&inst_idx)
+        trace!("::patch_save_hole inst_idx={} sp={} save_holes={:?} needs_sp={:?}",
+                    inst_idx, st_str(sp), self.save_holes, self.needs_save_patch);
+
+        let transition_idx = (sp & STATE_MAX) as usize;
+
+        let save_contains_holes = self.needs_save_patch.contains(&transition_idx)
             || (inst_idx..(inst_idx+self.onepass.num_byte_classes)).any(|i|
                     self.holes.contains_key(&i));
+
+        let s = Vec::from(self.transition_table_of(sp));
 
         if !save_contains_holes {
             match self.save_holes.remove(&inst_idx) {
@@ -436,7 +445,7 @@ impl<'a> OnePassCompiler<'a> {
                 Some(hs) => {
                     for h in hs.into_iter() {
                         {
-                            let s = Vec::from(self.transition_table_of(sp));
+                            self.needs_save_patch.remove(&h);
                             let from =
                                 self.transition_table_of_mut(h as StatePtr);
                             Self::forward_to_save(from, &s, sp);
@@ -449,14 +458,20 @@ impl<'a> OnePassCompiler<'a> {
         }
     }
 
+    fn add_save_hole(&mut self, from_inst_idx: usize, to_transition_idx: usize) {
+        self.save_holes.entry(to_transition_idx)
+            .or_insert(vec![]).push(from_inst_idx);
+        self.needs_save_patch.insert(from_inst_idx);
+    }
+
     /// After we have just patched `hole`, it might have made a save
     /// hole fillable that was not previously fillable.
     ///
     fn try_patch_defered_save_hole(&mut self, hole: usize) {
-        trace!("::try_patch_defered_save_hole hole={}", hole);
         let holy_state = self.hole_states[hole];
-        trace!("::try_patch_defered_save_hole holy_state={}", holy_state);
         let holy_ptr = self.compiled[holy_state];
+        trace!("::try_patch_defered_save_hole holy_state={} holy_ptr={}",
+                    holy_state, st_str(holy_ptr));
         if holy_ptr != STATE_POISON
             && self.save_holes.contains_key(&holy_state) {
             self.patch_hole(holy_state, holy_ptr);
@@ -533,7 +548,7 @@ impl<'a> OnePassCompiler<'a> {
             let s_ts = Vec::from(self.transition_table_of(self.compiled[to]));
             Self::forward_to_save(from, &s_ts, self.compiled[to]);
         } else {
-            self.save_holes.entry(to).or_insert(vec![]).push(from_idx);
+            self.add_save_hole(from_idx, to);
             self.hole_states[from_idx] = inst_idx;
         }
     }
@@ -549,9 +564,6 @@ impl<'a> OnePassCompiler<'a> {
 
         for (i, t) in transitions.iter_mut().enumerate() {
             if save_transitions[i] != STATE_DEAD {
-                // overlaps mean it is not one-pass
-                debug_assert!(*t == STATE_DEAD);
-
                 *t = save_ptr;
             }
         }

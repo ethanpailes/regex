@@ -76,7 +76,15 @@ pub fn is_one_pass(expr: &Hir) -> bool {
             for (j, e2) in es.iter().enumerate() {
                 if i != j {
                     let mut fset = fset_of(e1);
-                    fset.intersect(&fset_of(e2));
+                    let fset2 = fset_of(e2);
+
+                    // For the regex /a|()+/, we don't have a way to
+                    // differentiate the branches, so we are not onepass.
+                    if fset.is_empty() || fset2.is_empty() {
+                        return true;
+                    }
+
+                    fset.intersect(&fset2);
                     if ! fset.is_empty() {
                         return true;
                     }
