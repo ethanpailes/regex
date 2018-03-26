@@ -9,17 +9,9 @@ import csv
 import pdb
 
 def main():
-    sf_data = []
-    for sf in sys.argv[1:]:
-        rows = {}
-        with open(sf + ".bench.csv", "r") as f:
-            for row in csv.DictReader(f):
-                rows[row["test_name"]] = row
-        sf_data.append((int(sf), rows))
-
-    for t in tests_of(sf_data):
-        graph_all_features(sf_data, t)
-        plt.savefig(test_name(t) + ".png")
+    for test in sys.argv[1:]:
+        graph_test(test)
+        plt.savefig(test_name(test) + ".png", bbox_inches="tight")
         plt.close()
 
 def graph_all_features(sf_data, test):
@@ -34,9 +26,20 @@ def graph_all_features(sf_data, test):
 
     graph_test(sf_data, test, features)
 
-def graph_test(sf_data, test, features):
+def slurp(test):
+    data = []
+    with open(test, "r") as f:
+        for row in csv.DictReader(f):
+            data.append(row)
+    return data
+    
+
+def graph_test(test):
     """ Produce a line graph with one line per feature.
     """
+
+    data = slurp(test + ".csv")
+    features = set(row["feature"] for row in data)
 
     xmin = sys.maxsize
     xmax = 0
@@ -44,18 +47,10 @@ def graph_test(sf_data, test, features):
     ymax = 0
     ymin = sys.maxsize
     for feature in features:
-        scale = []
-        running_time = []
-        error = []
-
-        for (sf, data) in sf_data:
-            scale.append(sf)
-
-            rt = int(data[test][feature + "_time"].replace(",", ""))
-            running_time.append(rt)
-
-            err = int(data[test][feature + "_error"].replace(",", ""))
-            error.append(err)
+        rows = [r for r in data if r["feature"] == feature]
+        scale = [int(r["scaling_factor"]) for r in rows]
+        running_time = [int(r["time"].replace(",", "")) for r in rows]
+        error = [int(r["error"].replace(",", "")) for r in rows]
 
         xmax = max(xmax, max(scale))
         xmin = min(xmin, min(scale))
@@ -69,12 +64,12 @@ def graph_test(sf_data, test, features):
             scale,
             running_time,
             yerr=error, fmt='o',
-            label=feature,
+            label=feature_name(feature),
         )
 
     plt.xlabel("Scaling Factor")
-    plt.ylabel("Running Time")
-    plt.title(test_name(test))
+    plt.ylabel("Running Time in ns")
+    # plt.title(test_name(test))
     plt.ylim((percent_shift(ymin, ymax - ymin, -10.0),
               percent_shift(ymax, ymax - ymin, 10.0)))
     plt.xlim((percent_shift(xmin, xmax - xmin, -10.0),
@@ -90,7 +85,10 @@ def tests_of(sf_data):
     return sf_data[0][1].keys()
 
 def test_name(test):
-    return test[len("captures::cap_"):]
+    return test[len("captures::cap_"):].replace("_", "-")
+
+def feature_name(feature):
+    return feature[len("catpures-"):]
 
 if __name__ == "__main__":
     main()

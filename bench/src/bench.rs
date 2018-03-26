@@ -251,6 +251,7 @@ macro_rules! bench_find {
 //     haystack : String, the string to search
 //   bench_captures will benchmark how fast re.captures() produces
 //   the capture groups in question.
+#[cfg(feature = "re-rust-bytes")]
 macro_rules! bench_captures {
     ($name:ident, $count:expr, $build_re:expr, $build_haystack:expr) => {
 

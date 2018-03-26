@@ -249,6 +249,13 @@ macro_rules! skip_test {
                 assert!(! caps.get(1).is_some());
             }
 
+            #[test]
+            fn skip_dotstar_bounce() {
+                let re = regex(r".*a(bbbb)");
+                let caps = re.captures(b"cacacabbbb").unwrap();
+                assert_eq!(b"bbbb", &caps[1]);
+            }
+
         }
     }
 }

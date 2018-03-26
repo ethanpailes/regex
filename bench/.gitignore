@@ -1,3 +1,4 @@
 *.bench
 *.bench.csv
 *.png
+*.csv

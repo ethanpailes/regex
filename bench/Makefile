@@ -1,4 +1,7 @@
 
+all:
+
 clean:
-	rm *.bench
-	rm *.bench.csv
+	rm -f *.bench
+	rm -f *.bench.csv
+	rm -f *.png

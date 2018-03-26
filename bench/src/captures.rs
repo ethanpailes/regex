@@ -28,6 +28,7 @@ macro_rules! regex {
         ExecBuilder::new($pattern)
             .bounded_backtracking()
             .only_utf8(false)
+            .bytes(true)
             .build()
             .map(regex::bytes::Regex::from)
             .unwrap()
@@ -41,6 +42,7 @@ macro_rules! regex {
         ExecBuilder::new($pattern)
             .nfa()
             .only_utf8(false)
+            .bytes(true)
             .build()
             .map(regex::bytes::Regex::from)
             .unwrap()
@@ -59,6 +61,9 @@ macro_rules! regex {
         use regex::internal::ExecBuilder;
         ExecBuilder::new($pattern)
             .skip_pikevm()
+            .skip_dotstar_term_opt(false)
+            .skip_estar_term_opt(false)
+            .skip_skip_lit_opt(false)
             .only_utf8(false)
             .build()
             .map(regex::bytes::Regex::from)
@@ -72,7 +77,8 @@ macro_rules! regex {
         use regex::internal::ExecBuilder;
         ExecBuilder::new($pattern)
             .skip_pikevm()
-            .skip_dotstar_term_opt(false)
+            .skip_estar_term_opt(false)
+            .skip_skip_lit_opt(false)
             .only_utf8(false)
             .build()
             .map(regex::bytes::Regex::from)
@@ -86,7 +92,8 @@ macro_rules! regex {
         use regex::internal::ExecBuilder;
         ExecBuilder::new($pattern)
             .skip_pikevm()
-            .skip_estar_term_opt(false)
+            .skip_dotstar_term_opt(false)
+            .skip_skip_lit_opt(false)
             .only_utf8(false)
             .build()
             .map(regex::bytes::Regex::from)
@@ -100,7 +107,8 @@ macro_rules! regex {
         use regex::internal::ExecBuilder;
         ExecBuilder::new($pattern)
             .skip_pikevm()
-            .skip_skip_lit_opt(false)
+            .skip_dotstar_term_opt(false)
+            .skip_estar_term_opt(false)
             .only_utf8(false)
             .build()
             .map(regex::bytes::Regex::from)
@@ -114,8 +122,7 @@ macro_rules! regex {
         use regex::internal::ExecBuilder;
         ExecBuilder::new($pattern)
             .skip_pikevm()
-            .skip_dotstar_term_opt(false)
-            .skip_estar_term_opt(false)
+            .skip_skip_lit_opt(false)
             .only_utf8(false)
             .build()
             .map(regex::bytes::Regex::from)
@@ -129,8 +136,7 @@ macro_rules! regex {
         use regex::internal::ExecBuilder;
         ExecBuilder::new($pattern)
             .skip_pikevm()
-            .skip_dotstar_term_opt(false)
-            .skip_skip_lit_opt(false)
+            .skip_estar_term_opt(false)
             .only_utf8(false)
             .build()
             .map(regex::bytes::Regex::from)
@@ -144,8 +150,7 @@ macro_rules! regex {
         use regex::internal::ExecBuilder;
         ExecBuilder::new($pattern)
             .skip_pikevm()
-            .skip_estar_term_opt(false)
-            .skip_skip_lit_opt(false)
+            .skip_dotstar_term_opt(false)
             .only_utf8(false)
             .build()
             .map(regex::bytes::Regex::from)
@@ -159,9 +164,6 @@ macro_rules! regex {
         use regex::internal::ExecBuilder;
         ExecBuilder::new($pattern)
             .skip_pikevm()
-            .skip_estar_term_opt(false)
-            .skip_estar_term_opt(false)
-            .skip_skip_lit_opt(false)
             .only_utf8(false)
             .build()
             .map(regex::bytes::Regex::from)
@@ -181,6 +183,9 @@ macro_rules! regex {
         use regex::internal::ExecBuilder;
         ExecBuilder::new($pattern)
             .skip_backtrack()
+            .skip_estar_term_opt(false)
+            .skip_dotstar_term_opt(false)
+            .skip_skip_lit_opt(false)
             .only_utf8(false)
             .build()
             .map(regex::bytes::Regex::from)
@@ -194,7 +199,8 @@ macro_rules! regex {
         use regex::internal::ExecBuilder;
         ExecBuilder::new($pattern)
             .skip_backtrack()
-            .skip_dotstar_term_opt(false)
+            .skip_estar_term_opt(false)
+            .skip_skip_lit_opt(false)
             .only_utf8(false)
             .build()
             .map(regex::bytes::Regex::from)
@@ -208,7 +214,8 @@ macro_rules! regex {
         use regex::internal::ExecBuilder;
         ExecBuilder::new($pattern)
             .skip_backtrack()
-            .skip_estar_term_opt(false)
+            .skip_dotstar_term_opt(false)
+            .skip_skip_lit_opt(false)
             .only_utf8(false)
             .build()
             .map(regex::bytes::Regex::from)
@@ -222,7 +229,8 @@ macro_rules! regex {
         use regex::internal::ExecBuilder;
         ExecBuilder::new($pattern)
             .skip_backtrack()
-            .skip_skip_lit_opt(false)
+            .skip_estar_term_opt(false)
+            .skip_dotstar_term_opt(false)
             .only_utf8(false)
             .build()
             .map(regex::bytes::Regex::from)
@@ -236,8 +244,7 @@ macro_rules! regex {
         use regex::internal::ExecBuilder;
         ExecBuilder::new($pattern)
             .skip_backtrack()
-            .skip_dotstar_term_opt(false)
-            .skip_estar_term_opt(false)
+            .skip_skip_lit_opt(false)
             .only_utf8(false)
             .build()
             .map(regex::bytes::Regex::from)
@@ -251,8 +258,7 @@ macro_rules! regex {
         use regex::internal::ExecBuilder;
         ExecBuilder::new($pattern)
             .skip_backtrack()
-            .skip_dotstar_term_opt(false)
-            .skip_skip_lit_opt(false)
+            .skip_estar_term_opt(false)
             .only_utf8(false)
             .build()
             .map(regex::bytes::Regex::from)
@@ -266,8 +272,7 @@ macro_rules! regex {
         use regex::internal::ExecBuilder;
         ExecBuilder::new($pattern)
             .skip_backtrack()
-            .skip_estar_term_opt(false)
-            .skip_skip_lit_opt(false)
+            .skip_dotstar_term_opt(false)
             .only_utf8(false)
             .build()
             .map(regex::bytes::Regex::from)
@@ -281,9 +286,6 @@ macro_rules! regex {
         use regex::internal::ExecBuilder;
         ExecBuilder::new($pattern)
             .skip_backtrack()
-            .skip_estar_term_opt(false)
-            .skip_estar_term_opt(false)
-            .skip_skip_lit_opt(false)
             .only_utf8(false)
             .build()
             .map(regex::bytes::Regex::from)
@@ -317,19 +319,11 @@ macro_rules! regex {
 //
 /////////////////////////////////////////////////////////////////////////
 
-// I've noticed the first microbenchmark being rather slow, so
-// this guy is just here to knock the ice off the cache when
-// running the capture benchmarks using the `cap_` benchmark
-// filter (`bench/run rust-bytes cap_`).
-bench_captures!(cap_aaaaaaaa, 1,
-                |_| regex!(r"aaaa(bbbb)cccc"),
-                |_| String::from("aaaabbbbcccc"));
-
 // This is the strong point for skip regex. If we don't win here,
 // something is seriously wrong.
 //
 // expectation: major iwn for skipping.
-bench_captures!(cap_middle, 1,
+bench_captures!(cap_a_big_skip, 1,
     |scale| 
         regex!(format!(r"{}(bbbb){}",
             repeat("aaaa").take(scale).collect::<String>(),
@@ -345,16 +339,19 @@ bench_captures!(cap_leading_dotstar, 1,
     |_| regex!(r".*(aaaa)"),
     |scale| format!("{}aaaa", repeat("b").take(scale).collect::<String>()));
 
+bench_captures!(cap_dotstar_bounce, 1,
+    |_| regex!(r".*(a)"),
+    |scale| format!("{}", repeat("ca").take(scale).collect::<String>()));
+
 // expectation: major win for direct scanning
 bench_captures!(cap_leading_noncontaining_estar, 1,
-    |_| regex!(r"a*because(why)not"),
-    |scale| format!("{}becausewhynot",
-                repeat("a").take(scale).collect::<String>()));
+    |_| regex!(r"a*foo(bar)"),
+    |scale| format!("{}foobar", repeat("a").take(scale).collect::<String>()));
 
 // expectation: modest win for skipping
 bench_captures!(cap_repeated_alternates, 1,
-    |_| regex!(r"(?:a|b)(?:c|d)(?:e|f)(?:g|h)(?:i|j)(?:k|l)(?:m|n)(?:o|p)(zz)"),
-    |_| "adehilmpzz".to_string());
+    |_| regex!(r"(?:(?:a|bb)(?:c|dd)(?:e|ff)(?:g|hh)(?:i|jj)(?:k|ll)(?:m|nn)(?:o|pp))*(zz)"),
+    |scale| format!("{}zz", repeat("acegikmo").take(scale).collect::<String>()));
 
 // The goal here is to blow up the bitset on the bounded backtracker
 // and make it perform poorly. The bitset usage is (regex-size * input-size),
@@ -370,17 +367,16 @@ bench_captures!(cap_really_big_noscan, 1,
 //
 // expectation: The backtracker won't do well (but the bounded backtracker
 // should do fine).
-// bench_captures!(cap_pathological, 1,
-//     |scale| regex!(format!(r"({}){}",
-//                 repeat("a?").take(scale).collect::<String>(),
-//                 repeat("a").take(scale).collect::<String>()).as_str()),
-//     |scale| repeat("a").take(scale).collect::<String>());
+bench_captures!(cap_pathological, 1,
+     |scale| regex!(format!(r"({}){}",
+                 repeat("a?").take(scale / 1000).collect::<String>(),
+                 repeat("a").take(scale / 1000).collect::<String>()).as_str()),
+     |scale| repeat("a").take(scale / 1000).collect::<String>());
 
-// Is this faster for the PikeVM than the backtracker because the
-// PikeVM is breadth-first while the backtracker is depth-first?
-bench_captures!(cap_quad_scan, 1,
-    |_| regex!("(?:.*z|([az]*))b"),
-    |scale| format!("{}zab", repeat("a").take(scale).collect::<String>()));
+// TODO: this can't be testing what I want it to be testing
+// bench_captures!(cap_quad_scan, 1,
+//    |_| regex!("(?:.*z|([az]*))b"),
+//    |scale| format!("{}zab", repeat("a").take(scale).collect::<String>()));
 
 bench_captures!(cap_first, 2,
     |_| regex!("(aaaa)(bbbbbb)*"),
@@ -397,5 +393,5 @@ bench_captures!(cap_justone, 1, |_| regex!("(a)"), |_| "a".to_string());
 //
 // expectation: very similar perf
 bench_captures!(cap_justtwo_branch, 1,
-    |_| regex!("(ab|ac)"),
-    |_| "ab".to_string());
+    |_| regex!(r"(ab|ac)*"),
+    |scale| repeat("ab").take(scale).collect::<String>());
