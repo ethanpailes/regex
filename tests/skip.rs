@@ -50,8 +50,6 @@ macro_rules! skip_test {
                 assert_eq!(b"bbb", &caps[1]);
             }
 
-            // TODO: "term1*term2" should just compile to scan(term2)
-            
             // make sure we are handling the BranchType stuff around
             // repetitions correctly
             #[test]

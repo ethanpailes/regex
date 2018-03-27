@@ -14,7 +14,7 @@ use std::result;
 use std::sync::Arc;
 
 // Flip to true for debugging
-const TRACE: bool = false;
+const TRACE: bool = true;
 macro_rules! trace {
     ($($tts:tt)*) => {
         if TRACE {
@@ -911,6 +911,7 @@ impl Compiler {
         mut exprs: &[&Expr]
     ) -> Result {
         trace!("::sc_concat ctx={:?}", ctx);
+        trace!("::sc_concat es={:?}", exprs);
 
         // short circut empty concatinations
         if exprs.len() == 0 {
@@ -943,10 +944,14 @@ impl Compiler {
         for (es_end, term) in exprs.iter().enumerate().rev() {
             if self.can_scan_to(term) {
                 trace!("::sc_concat can scan to term at idx {}", es_end);
+                let mut can_opt = false;
+                noopt_start = es_end + 1;
                 for es_start in 0..es_end {
                     let opt = try!(self.can_perform_scan_opt(
                                             &exprs[es_start..es_end], term));
+                    trace!("::sc_concat opt={:?}", opt);
                     if opt != ScanOptType::NoScan {
+                        can_opt = true;
                         // Recursivly compile the front bit
                         let next =
                             try!(self.sc_concat(new_ctx, &exprs[0..es_start]));
@@ -956,9 +961,30 @@ impl Compiler {
                         let next = try!(opt.compile(self, new_ctx));
                         p = self.sc_continue(p, next);
 
-                        noopt_start = es_end + 1;
                         break;
                     }
+                }
+
+                if ! can_opt {
+                    let mut prev_term = None;
+                    for (i, term) in exprs[0..es_end].iter().enumerate().rev() {
+                        if self.can_scan_to(term) {
+                            prev_term = Some(i);
+                            break;
+                        }
+                    }
+                    let prev_term = prev_term.map(|x| x+1).unwrap_or(0);
+                    trace!("::sc_concat prev_term={}", prev_term);
+
+                    // TODO: we need to include the previous terminator.
+                    let next =
+                        try!(self.sc_concat(new_ctx, &exprs[0..prev_term]));
+                    p = self.sc_continue(p, next);
+
+                    let next = try!(
+                        self.sc_concat_noopt(new_ctx,
+                            &exprs[prev_term..(es_end + 1)]));
+                    p = self.sc_continue(p, next);
                 }
 
                 // bail out after the first scannable terminator
@@ -1142,6 +1168,7 @@ impl Compiler {
                          (*lit).clone(),
                          dotstar])));
 
+                trace!("::lit_in_es about to check intersection");
                 Ok(Program::intersection_is_empty(es_prog, &lit_program))
             }
         }
