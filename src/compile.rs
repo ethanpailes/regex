@@ -976,7 +976,6 @@ impl Compiler {
                     let prev_term = prev_term.map(|x| x+1).unwrap_or(0);
                     trace!("::sc_concat prev_term={}", prev_term);
 
-                    // TODO: we need to include the previous terminator.
                     let next =
                         try!(self.sc_concat(new_ctx, &exprs[0..prev_term]));
                     p = self.sc_continue(p, next);
@@ -1009,6 +1008,7 @@ impl Compiler {
         ctx: SkipCompilerContext,
         es: &[&Expr]
     ) -> Result {
+        trace!("::sc_concat_noopt es={:?}", es);
         let mut p = Patch { hole: Hole::None, entry: self.sc_next() };
 
         let mut new_ctx = ctx;
@@ -1026,11 +1026,13 @@ impl Compiler {
 
             match self.repeat_inner(e) {
                 Some(i) => {
+                    trace!("::sc_concat_noopt repeat");
                     repeats.push(e);
                     repeat_inners.push(i);
                 }
                 None => {
                     if repeats.len() > 0 {
+                        trace!("::sc_concat_noopt repeat terminator");
                         // determine what sort of branch we are dealing
                         // with here
                         repeat_inners.push(e);
@@ -1093,10 +1095,11 @@ impl Compiler {
     /// If `e` is a repetition, return the inner expression,
     /// otherwise None
     fn repeat_inner<'a> (&self, e: &'a Expr) -> Option<&'a Expr> {
-        use syntax::Expr::Repeat;
+        use syntax::Expr::{Repeat, Group};
 
         match e {
             &Repeat { ref e, r: _, greedy: _ } => Some(&*e),
+            &Group { ref e, i: _, name: _ } => self.repeat_inner(&*e),
             _ => None,
         }
     }
