@@ -18,9 +18,9 @@ a few nice properties that we can leverage.
        be implemented right in the DFA.
 */
 
-use std::collections::{HashMap, HashSet};
-
 use std::fmt;
+use analisys;
+use syntax::hir::Hir;
 use prog::{Program, Inst};
 use re_trait::Slot;
 
@@ -65,24 +65,6 @@ impl fmt::Display for OnePass {
 
         Ok(())
     }
-}
-
-
-#[derive(Debug)]
-pub enum OnePassError {
-    /// This program can't be executed as a one-pass regex.
-    NotOnePass,
-    /// There are too many instructions to deal with.
-    TooBig,
-    /// We don't yet support unicode OnePass execution.
-    HasUnicode,
-    /// Hints that destructuring should not be exhaustive.
-    ///
-    /// This enum may grow additional variants, so this makes sure clients
-    /// don't count on exhaustive matching. (Otherwise, adding a new variant
-    /// could break existing code.)
-    #[doc(hidden)]
-    __Nonexhaustive,
 }
 
 impl OnePass {
@@ -225,6 +207,258 @@ enum OnePassMatch {
     NoMatch(usize),
 }
 
+/// Compiler for a OnePass DFA
+pub struct OnePassCompiler<'r> {
+    onepass: OnePass,
+    // hir: &'r Hir,
+    prog: &'r Program,
+}
+
+impl<'r> OnePassCompiler<'r> {
+    /// Create a new OnePassCompiler for a given Hir.
+    /// Collect some metadata from the compiled program.
+    pub fn new(hirs: &[Hir], prog: &'r Program) -> Result<Self, OnePassError> {
+        if hirs.len() != 1 {
+            return Err(OnePassError::RegexSetUnsupported);
+        }
+
+        if ! analisys::is_one_pass(&hirs[0]) {
+            return Err(OnePassError::NotOnePass);
+        }
+
+        Ok(OnePassCompiler {
+            onepass: OnePass {
+                table: vec![],
+                num_byte_classes: (prog.byte_classes[255] as usize) + 1,
+                byte_classes: prog.byte_classes.clone(),
+                start_state: 0,
+                is_anchored_end: prog.is_anchored_end,
+                is_anchored_start: prog.is_anchored_start,
+            },
+            prog: prog,
+        })
+    }
+
+    /// Attempt to compile the regex to a OnePass DFA
+    pub fn compile(mut self) -> Result<OnePass, OnePassError> {
+        let p = try!(self.inst_patch(0));
+
+        // all paths should end up pointing to a match instruction
+        debug_assert!(p.holes.len() == 0);
+        self.onepass.start_state = p.single_entry_point().unwrap();
+
+        Ok(self.onepass)
+    }
+
+    // TODO: I think I need to memoise this to avoid infinite loops
+    /// For now we use direct recursive style
+    fn inst_patch(&mut self, inst_idx: usize) -> Result<Patch, OnePassError> {
+        match &self.prog[inst_idx] {
+            &Inst::Match(_) => {
+                // A match has no transition table. It exists only as
+                // match pointers in the transition tables of other states.
+                Ok(Patch {
+                    entry: EntryPoint(vec![STATE_MATCH;
+                                           self.onepass.num_byte_classes]),
+                    holes: vec![],
+                    flags: STATE_MATCH,
+                })
+            }
+            &Inst::Save(ref inst) => {
+                let p = self.save_patch(inst.slot);
+                let next_p = try!(self.inst_patch(inst.goto));
+
+                Ok(self.forward_patch(p, next_p))
+            }
+            &Inst::EmptyLook(ref inst) => {
+                // TODO: unimplimented for now
+                self.inst_patch(inst.goto)
+            }
+            &Inst::Bytes(ref inst) => {
+                let byte_class =
+                    self.onepass.byte_classes[inst.start as usize] as usize;
+                let p = self.byte_class_patch(byte_class);
+                let next_p = try!(self.inst_patch(inst.goto));
+                Ok(self.fuse_patch(p, next_p))
+            }
+            &Inst::Split(ref inst) => {
+                Ok(try!(self.inst_patch(inst.goto1))
+                    .or(try!(self.inst_patch(inst.goto2))))
+            }
+            &Inst::Char(_) | &Inst::Ranges(_) => unreachable!(),
+        }
+    }
+
+    //
+    // Patch Methods
+    //
+
+    fn save_patch(&mut self, slot: usize) -> Patch {
+        // all of the entry points to a save patch come from its children
+        let entry = vec![STATE_POISON; self.onepass.num_byte_classes];
+        let addr = self.onepass.table.len();
+        self.onepass.table.extend(
+            vec![STATE_DEAD; self.onepass.num_byte_classes]);
+        self.onepass.table.extend(
+            vec![slot as StatePtr; self.onepass.num_byte_classes]);
+
+        Patch {
+            entry: EntryPoint(entry),
+            holes: vec![Hole(addr)],
+            flags: STATE_SAVE,
+        }
+    }
+
+    fn byte_class_patch(&mut self, byte_class: usize) -> Patch {
+        let addr = self.onepass.table.len();
+        let mut entry = vec![STATE_POISON; self.onepass.num_byte_classes];
+        entry[byte_class] = addr as StatePtr;
+
+        self.onepass.table.extend(
+            vec![STATE_DEAD; self.onepass.num_byte_classes]);
+
+        Patch {
+            entry: EntryPoint(entry),
+            holes: vec![Hole(addr)],
+            flags: 0,
+        }
+    }
+
+    /// Fuse two patches together so that they must occur sequentially.
+    fn fuse_patch(&mut self, p1: Patch, p2: Patch) -> Patch {
+        for &Hole(ts_start) in p1.holes.iter() {
+            let ts_end = ts_start + self.onepass.num_byte_classes;
+            let ts = &mut self.onepass.table[ts_start..ts_end];
+
+            ts.iter_mut().enumerate().for_each(|(i, t)| {
+                if p2.entry.0[i] != STATE_POISON {
+                    *t = p2.entry.0[i] | p2.flags;
+                }
+            })
+        }
+
+        Patch {
+            entry: p1.entry,
+            holes: p2.holes,
+            flags: p1.flags,
+        }
+    }
+
+    /// Just like fuse_patch, except that the EntryPoints from p2 are
+    /// copied over to p1 so that anything that would enter p2 also
+    /// enters the new patch
+    fn forward_patch(&mut self, mut p1: Patch, p2: Patch) -> Patch {
+        for (i, e) in p2.entry.0.iter().enumerate() {
+            if *e != STATE_POISON {
+                // TODO: this needs to be the address of p1 rather
+                // than the targets for p2.
+                p1.entry.0[i] = *e;
+            }
+        }
+
+        self.fuse_patch(p1, p2)
+    }
+}
+
+
+/// The beginning of a transition table that needs to be
+/// patched to point to an EntryPoint.
+#[derive(Eq, PartialEq)]
+struct Hole(usize);
+
+/// A mapping from byte classes to state pointers which
+/// indicate compiled states.
+struct EntryPoint(Vec<StatePtr>);
+
+struct Patch {
+    entry: EntryPoint,
+    holes: Vec<Hole>,
+    /// Flags to apply to the entry point pointers when fusing the patch
+    flags: StatePtr,
+}
+
+impl Patch {
+    /// Combine two patches with a branch between them.
+    fn or(mut self, mut p: Patch) -> Patch {
+        debug_assert!({
+            let mut entries_intersect = false;
+            'LOOP: for (i, e1) in self.entry.0.iter().enumerate() {
+                if *e1 == STATE_DEAD {
+                    continue;
+                }
+                for (j, e2) in p.entry.0.iter().enumerate() {
+                    if *e2 == STATE_DEAD {
+                        continue;
+                    }
+                    if i != j && *e1 == *e2 {
+                        entries_intersect = true;
+                        break 'LOOP;
+                    }
+                }
+            }
+            ! entries_intersect
+        });
+
+        // We have to collapse the flags onto the EntryPoints of
+        // the patches now so that they can be differentiated.
+        for e in self.entry.0.iter_mut() {
+            *e = *e | self.flags;
+        }
+        self.flags = 0;
+        for e in p.entry.0.iter_mut() {
+            *e = *e | p.flags;
+        }
+
+        for (i, e2) in p.entry.0.iter().enumerate() {
+            if *e2 == STATE_POISON {
+                continue;
+            }
+
+            self.entry.0[i] = *e2;
+        }
+        self.holes.extend(p.holes);
+
+        self
+    }
+
+    fn single_entry_point(&self) -> Option<StatePtr> {
+        let mut ep = STATE_POISON;;
+        for e in self.entry.0.iter() {
+            if *e != STATE_POISON {
+                if ep == STATE_POISON {
+                    return None;
+                } else {
+                    ep = *e;
+                }
+            }
+        }
+
+        Some(ep | self.flags)
+    }
+}
+
+
+#[derive(Debug)]
+pub enum OnePassError {
+    /// This program can't be executed as a one-pass regex.
+    NotOnePass,
+    /// There are too many instructions to deal with.
+    TooBig,
+    /// We don't yet support unicode OnePass execution.
+    HasUnicode,
+    /// We don't yet support regex sets.
+    RegexSetUnsupported,
+    /// Hints that destructuring should not be exhaustive.
+    ///
+    /// This enum may grow additional variants, so this makes sure clients
+    /// don't count on exhaustive matching. (Otherwise, adding a new variant
+    /// could break existing code.)
+    #[doc(hidden)]
+    __Nonexhaustive,
+}
+
+
+/*
 /// A OnePass DFA.
 #[derive(Debug)]
 pub struct OnePassCompiler<'a> {
@@ -278,7 +512,7 @@ impl<'a> OnePassCompiler<'a> {
     // TODO: what is with that trailing dead state??? It doesn't seem to
     // impact correctness.
     //
-    // I think I need to put a leading /[^fset]*/ if we are not anchored
+    // I think I need to put a leading /[^fset]* / if we are not anchored
     // at the start
     //
     /// Attempt to compile a regex into a one-pass DFA
@@ -619,6 +853,7 @@ impl<'a> OnePassCompiler<'a> {
     }
 
 }
+*/
 
 type StatePtr = u32;
 

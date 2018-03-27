@@ -54,10 +54,6 @@ pub struct Program {
     pub is_anchored_end: bool,
     /// Whether this program contains a Unicode word boundary instruction.
     pub has_unicode_word_boundary: bool,
-    /// Whether the regex can be executed via a one-pass NFA simulation.
-    /// This is true iff there are no non-deterministic branches in the
-    /// Thompson's Construction NFA produced by the regex.
-    pub is_one_pass: bool,
     /// A possibly empty machine for very quickly matching prefix literals.
     pub prefixes: LiteralSearcher,
     /// A limit on the size of the cache that the DFA is allowed to use while
@@ -95,7 +91,6 @@ impl Program {
             is_reverse: false,
             is_anchored_start: false,
             is_anchored_end: false,
-            is_one_pass: false,
             has_unicode_word_boundary: false,
             prefixes: LiteralSearcher::empty(),
             dfa_size_limit: 2 * (1<<20),
