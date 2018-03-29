@@ -37,6 +37,8 @@ matiter!(match_start_end_empty_rep, r"(?:^$)*", "a\nb\nc",
 matiter!(match_start_end_empty_rep_rev, r"(?:$^)*", "a\nb\nc",
          (0, 0), (1, 1), (2, 2), (3, 3), (4, 4), (5, 5));
 
+mat!(just_x, r"x", "acx", Some((2, 3)));
+
 // Test negated character classes.
 mat!(negclass_letters, r"[^ac]", "acx", Some((2, 3)));
 mat!(negclass_letter_comma, r"[^a,]", "a,x", Some((2, 3)));

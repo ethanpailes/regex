@@ -18,6 +18,7 @@ use syntax::ParserBuilder;
 use syntax::hir::Hir;
 use syntax::hir::literal::Literals;
 
+use analisys;
 use backtrack;
 use compile::Compiler;
 use dfa;
@@ -338,10 +339,16 @@ impl ExecBuilder {
         dfa.dfa_size_limit = self.options.dfa_size_limit;
         dfa_reverse.dfa_size_limit = self.options.dfa_size_limit;
 
+        // We check this here rather than in the compiler to avoid
+        // duplicating work.
+        nfa.is_one_pass =
+            parsed.exprs.iter().all(|e| analisys::is_one_pass(e));
+        dfa.is_one_pass = nfa.is_one_pass;
+        dfa_reverse.is_one_pass = nfa.is_one_pass;
+
         let mut ro = ExecReadOnly {
             res: self.options.pats,
-            onepass: OnePassCompiler::new(&parsed.exprs, &nfa)
-                            .and_then(|opc| opc.compile()).ok(),
+            onepass: OnePassCompiler::new(&nfa).and_then(|c| c.compile()).ok(),
             nfa: nfa,
             dfa: dfa,
             dfa_reverse: dfa_reverse,

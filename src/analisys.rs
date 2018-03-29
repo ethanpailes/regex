@@ -19,6 +19,11 @@ pub fn is_one_pass(expr: &Hir) -> bool {
             match hir.kind() {
                 &HirKind::Concat(ref es) => self.check_concat(&es),
                 &HirKind::Alternation(ref es) => self.check_alternation(&es),
+                &HirKind::Repetition(ref rep) => {
+                    if fset_of(&*rep.hir).is_empty() {
+                        self.0 = false;
+                    }
+                }
                 _ => ()
             }
 
