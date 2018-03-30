@@ -1123,13 +1123,6 @@ impl Compiler {
             return Ok(ScanOptType::NoScan)
         }
 
-        // The dotstar optimization
-        if self.options.skip_flags.dotstar_term
-            && es.iter().all(|e| self.expr_is_repeated_any(e)) {
-            self.skip_opts_used.dotstar_term = true;
-            return Ok(ScanOptType::Dotstar(es, term))
-        }
-
         // The estar optimization
         if self.options.skip_flags.estar_term {
             let es_prog = try!(self.compile_es_prog(es));
@@ -1139,6 +1132,13 @@ impl Compiler {
             } else {
                 ScanOptType::NoScan
             })
+        }
+
+        // The dotstar optimization
+        if self.options.skip_flags.dotstar_term
+            && es.iter().all(|e| self.expr_is_repeated_any(e)) {
+            self.skip_opts_used.dotstar_term = true;
+            return Ok(ScanOptType::Dotstar(es, term))
         }
 
         Ok(ScanOptType::NoScan)
