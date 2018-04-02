@@ -344,7 +344,7 @@ bench_captures!(cap_dotstar_bounce, 1,
     |scale| format!("{}", repeat("ca").take(scale).collect::<String>()));
 
 // expectation: major win for direct scanning
-bench_captures!(cap_leading_noncontaining_estar, 1,
+bench_captures!(cap_leading_estar, 1,
     |_| regex!(r"a*foo(bar)"),
     |scale| format!("{}foobar", repeat("a").take(scale).collect::<String>()));
 
@@ -392,6 +392,13 @@ bench_captures!(cap_justone, 1, |_| regex!("(a)"), |_| "a".to_string());
 // to emit code that is pretty equivalent to the standard engine.
 //
 // expectation: very similar perf
-bench_captures!(cap_justtwo_branch, 1,
+bench_captures!(cap_no_opt, 1,
     |_| regex!(r"(ab|ac)*"),
     |scale| repeat("ab").take(scale).collect::<String>());
+
+// expectation: the a+ trailing
+bench_captures!(cap_aplus_trailing, 1,
+    |_| regex!(r"(a+).*"),
+    |scale| format!("{}{}",
+        repeat("a").take(scale).collect::<String>(),
+        repeat("b").take(scale).collect::<String>()));

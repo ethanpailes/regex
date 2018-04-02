@@ -1126,12 +1126,10 @@ impl Compiler {
         // The estar optimization
         if self.options.skip_flags.estar_term {
             let es_prog = try!(self.compile_es_prog(es));
-            return Ok(if try!(self.lit_not_in_es(&es_prog, term)) {
+            if try!(self.lit_not_in_es(&es_prog, term)) {
                 self.skip_opts_used.estar_term = true;
-                ScanOptType::Estar(term)
-            } else {
-                ScanOptType::NoScan
-            })
+                return Ok(ScanOptType::Estar(term));
+            }
         }
 
         // The dotstar optimization

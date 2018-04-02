@@ -11,7 +11,7 @@ if ! [ -z ${1+x} ] ; then
   fi
 fi
 
-RESOURCE_DIR=$HOME/repos/lazy-regex/evaluation/resources
+RESOURCE_DIR=$HOME/repos/thesis/resources
 
 A_BIG_SKIP_FEATURES=(
   "captures-baseline-backtrack"
@@ -31,6 +31,11 @@ DOTSTAR_BOUNCE=(
   "captures-baseline-backtrack"
   "captures-skip-backtrack-ds-es-sl"
   "captures-skip-backtrack-es-sl"
+)
+
+TRAILING=(
+  "captures-baseline-backtrack"
+  "captures-skip-backtrack-ds-es-sl"
 )
 
 LEADING_NONCONTAINING_ESTAR=(
@@ -86,11 +91,12 @@ function gen_data_points() {
       for scaling_factor in ${SCALING_FACTORS[@]}
       do
         echo ">>> scaling_factor=${scaling_factor} feature=${feature}"
+        bench_file=${scaling_factor}-${feature}-${FILTER}.bench
 
         set +e
         SKIP_RE_BENCH_SCALE=${scaling_factor} \
           cargo bench --bench bench --features ${feature} ${FILTER} |\
-          tee ${scaling_factor}-${feature}.bench
+          tee ${bench_file}
         set -e
       done
     done
@@ -104,8 +110,9 @@ function gen_data_points() {
     for feature in ${FEATURES[@]}
     do
       echo "    > feature=${feature}"
+      bench_file=${scaling_factor}-${feature}-${FILTER}.bench
 
-      $(cat ${scaling_factor}-${feature}.bench | \
+      $(cat ${bench_file} | \
         rg "^test ([a-zA-Z:_]+) +... bench: +([0-9,]+) ns/iter \(\+/\- ([0-9,]+)\).*$"\
            --replace "${scaling_factor},${feature},\$1,\"\$2\",\"\$3\"" >> \
         ${csv_file} || true)
@@ -119,10 +126,11 @@ function gen_data_points() {
 echo "scaling_factor,feature,test_name,time,error" > ${csv_file}
 
 gen_data_points cap_a_big_skip ${A_BIG_SKIP_FEATURES[@]}
+gen_data_points cap_aplus_trailing ${TRAILING[@]}
 gen_data_points cap_leading_dotstar ${LEADING_DOTSTAR_FEATURES[@]}
-gen_data_points cap_leading_noncontaining_estar ${LEADING_NONCONTAINING_ESTAR[@]}
+gen_data_points cap_leading_estar ${LEADING_NONCONTAINING_ESTAR[@]}
 gen_data_points cap_dotstar_bounce ${DOTSTAR_BOUNCE[@]}
-gen_data_points cap_justtwo_branch ${JUSTTWO_BRANCH[@]}
+gen_data_points cap_no_opt ${JUSTTWO_BRANCH[@]}
 
 # split the benchmark data up by test
 tests=$(xsv select test_name ${csv_file} | tail -n +2 | awk '!a[$0]++')
@@ -132,4 +140,8 @@ do
 done
 
 python3 graph-sfs.py ${tests[@]}
+
+xsv search -s scaling_factor "8000" ${csv_file} > 8000-all.csv
+python3 graph-bench-bar.py 8000-all.csv
+
 cp *.png ${RESOURCE_DIR}

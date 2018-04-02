@@ -46,7 +46,7 @@ def graph_test(test):
 
     ymax = 0
     ymin = sys.maxsize
-    for feature in features:
+    for (feature, marker) in zip(features, markers):
         rows = [r for r in data if r["feature"] == feature]
         scale = [int(r["scaling_factor"]) for r in rows]
         running_time = [int(r["time"].replace(",", "")) for r in rows]
@@ -63,7 +63,7 @@ def graph_test(test):
         plt.errorbar(
             scale,
             running_time,
-            yerr=error, fmt='o',
+            yerr=error, fmt=marker,
             label=feature_name(feature),
         )
 
@@ -75,6 +75,8 @@ def graph_test(test):
     plt.xlim((percent_shift(xmin, xmax - xmin, -10.0),
               percent_shift(xmax, xmax - xmin, 10.0)))
     plt.legend()
+
+markers = ["o", "s", "v", "^", ">", "<", "8", "p"]
 
 def percent_shift(n, span, p):
     """ Shift down by -p% of p if p is negative, else shift up by p% of span
@@ -88,7 +90,7 @@ def test_name(test):
     return test[len("captures::cap_"):].replace("_", "-")
 
 def feature_name(feature):
-    return feature[len("catpures-"):]
+    return feature[len("catpures-"):].replace("ds-es-sl", "all")
 
 if __name__ == "__main__":
     main()
