@@ -81,7 +81,9 @@ impl OnePass {
                 OnePassMatch::NoMatch(_) => false,
             }
         } else {
-            while at < text.len() {
+            // This is a do-while style loop instead of a normal
+            // while loop to handle empty regex.
+            loop {
                 trace!("begining execution at {}", at);
                 match self.exec_(slots, text, at) {
                     OnePassMatch::Match => return true,
@@ -95,6 +97,10 @@ impl OnePass {
                         at = last + 1;
                         trace!("NoMatch new_at={} text.len()={}", at, text.len());
                     }
+                }
+
+                if at >= text.len() {
+                    break;
                 }
             }
 
@@ -119,20 +125,16 @@ impl OnePass {
         mut at: usize
     ) -> OnePassMatch {
         let mut state_ptr = self.start_state;
+        trace!("::exec_ st={}", st_str(state_ptr));
 
-        let mut ebrake = 0;
         while at < text.len() {
             debug_assert!(state_ptr != STATE_POISON);
             let byte_class = self.byte_classes[text[at] as usize] as usize;
             trace!("::exec_ loop st={} at={} bc={}",
                         st_str(state_ptr), at, byte_class);
 
-            if ebrake > 10 {
-                assert!(false);
-            }
-            ebrake += 1;
-
             if state_ptr & STATE_SPECIAL == 0 {
+                at += 1;
                 // No need to mask because no flags are set.
                 state_ptr = self.table[state_ptr as usize + byte_class];
             } else if state_ptr == STATE_DEAD {
@@ -150,21 +152,17 @@ impl OnePass {
                 slots[slot_idx as usize] = Some(at);
 
                 state_ptr = self.table[state_idx + byte_class];
-                continue;
             } else if state_ptr == STATE_MATCH {
-                assert!(false);
-                if self.is_anchored_end {
+                if ! self.is_anchored_end {
                     return OnePassMatch::Match;
+                } else {
+                    return OnePassMatch::NoMatch(at);
                 }
             } else {
                 unreachable!();
             }
-
-            at += 1;
         }
-        at -= 1;
 
-        /*
         // set the byte class to be EOF
         let byte_class = self.num_byte_classes - 1;
         trace!("::exec eof st={} bc={}", st_str(state_ptr), byte_class);
@@ -187,7 +185,6 @@ impl OnePass {
                 state_ptr = self.table[state_idx + byte_class];
             }
         }
-        */
 
         if state_ptr == STATE_MATCH {
             OnePassMatch::Match
@@ -278,6 +275,8 @@ impl<'r> OnePassCompiler<'r> {
 
     /// For now we use direct recursive style
     fn inst_patch(&mut self, inst_idx: usize) -> Result<&Patch, OnePassError> {
+        trace!("::inst_patch inst_idx={}", inst_idx);
+
         // These odd looking acrobatics are the please the borrow checker.
         if self.compiled[inst_idx].is_some() {
             match &self.compiled[inst_idx] {
