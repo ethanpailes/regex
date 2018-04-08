@@ -20,7 +20,7 @@ a few nice properties that we can leverage.
 
 use std::fmt;
 use prog::{Program, Inst};
-use re_trait::Slot;
+use re_trait::Slot; use std::collections::{HashMap, HashSet};
 
 // flip to true for debugging
 const TRACE: bool = true;
@@ -135,6 +135,11 @@ impl OnePass {
 
             if state_ptr & STATE_SPECIAL == 0 {
                 at += 1;
+                if at >= text.len() {
+                    break;
+                }
+                let byte_class = self.byte_classes[text[at] as usize] as usize;
+
                 // No need to mask because no flags are set.
                 state_ptr = self.table[state_ptr as usize + byte_class];
             } else if state_ptr == STATE_DEAD {
@@ -168,22 +173,22 @@ impl OnePass {
         trace!("::exec eof st={} bc={}", st_str(state_ptr), byte_class);
         if state_ptr & STATE_SPECIAL == 0 {
             state_ptr = self.table[state_ptr as usize + byte_class];
-        } else {
-            while state_ptr & STATE_SAVE != 0 {
-                trace!("::exec eof save");
-                // No state should ever have both the SAVE and MATCH
-                // flags set.
-                debug_assert!(state_ptr & STATE_MATCH == 0);
+        }
 
-                let state_idx = (state_ptr & STATE_MAX) as usize;
+        while state_ptr & STATE_SAVE != 0 {
+            trace!("::exec eof save");
+            // No state should ever have both the SAVE and MATCH
+            // flags set.
+            debug_assert!(state_ptr & STATE_MATCH == 0);
 
-                // the second save entry is filled with the save slots
-                // that we need to fill.
-                let slot_idx = self.table[state_idx + self.num_byte_classes];
-                slots[slot_idx as usize] = Some(at);
+            let state_idx = (state_ptr & STATE_MAX) as usize;
 
-                state_ptr = self.table[state_idx + byte_class];
-            }
+            // the second save entry is filled with the save slots
+            // that we need to fill.
+            let slot_idx = self.table[state_idx + self.num_byte_classes];
+            slots[slot_idx as usize] = Some(at);
+
+            state_ptr = self.table[state_idx + byte_class];
         }
 
         if state_ptr == STATE_MATCH {
@@ -218,9 +223,218 @@ enum OnePassMatch {
 pub struct OnePassCompiler<'r> {
     onepass: OnePass,
     prog: &'r Program,
-    /// A mapping from instruction indicies to their patches.
-    compiled: Vec<Option<Patch>>,
+
+    /// A mapping from instruction indicies to their transitions
+    transitions: Vec<Option<TransitionTable>>,
+
+    forwards: Forwards,
+
+    // A mapping from instruction indicies to their patches.
+    // compiled: Vec<Option<Patch>>,
 }
+
+// A mapping from byte classes to target states annotated
+// with transition priority. An intermediary representation.
+struct TransitionTable(Vec<(TransitionTarget, usize)>);
+#[derive(Debug, Clone, Eq, PartialEq)]
+enum TransitionTarget {
+    Die,
+    Match,
+    Inst(usize),
+    Save(usize),
+}
+
+/// A mapping from target states to lists of (source state, priority) pairs.
+///
+/// The directionality here is a little counter intuitive, because we
+/// are trying to copy the transitions over from the targets to the
+/// sources.
+///
+/// Use hash sets rather than arrays because I expect the mapping
+/// to be sparse.
+///
+/// TODO: there are more clones that I am comfortable with here.
+#[derive(Debug, Clone)]
+struct Forwards {
+    jobs: Vec<Forward>,
+    e_out: HashMap<usize, Vec<usize>>,
+    e_in: HashMap<usize, Vec<usize>>,
+
+    inst_froms: HashMap<usize, Vec<usize>>,
+    inst_tos: HashMap<usize, Vec<usize>>,
+
+    /// We really care about the root set, but it is much easier to
+    /// keep track of its inverse in an online way.
+    not_root_set: HashSet<usize>,
+}
+
+impl Forwards {
+    pub fn new() -> Self {
+        Forwards {
+            jobs: vec![],
+            e_out: HashMap::new(),
+            e_in: HashMap::new(),
+
+            inst_froms: HashMap::new(),
+            inst_tos: HashMap::new(),
+
+            not_root_set: HashSet::new(),
+        }
+    }
+
+    pub fn forward(&mut self, from: usize, to: usize, priority: usize) {
+        trace!("::forward from={} to={}", from, to);
+
+        let fidx = self.jobs.len();
+        self.jobs.push(Forward {
+            from: from,
+            to: to,
+            priority: priority,
+        });
+        
+        self.inst_froms.entry(from).or_insert(vec![]).push(fidx);
+        self.inst_tos.entry(to).or_insert(vec![]).push(fidx);
+
+        match self.inst_froms.get(&to) {
+            Some(dependancies) => {
+                trace!("dependancies = {:?}", dependancies);
+                for dep in dependancies.iter() {
+                    Self::edge(
+                        &mut self.e_out, &mut self.e_in,
+                        &mut self.not_root_set, *dep, fidx);
+                }
+            }
+            None => {}
+        }
+
+        match self.inst_tos.get(&from) {
+            Some(dependants) => {
+                for dep in dependants.iter() {
+                    Self::edge(
+                        &mut self.e_out, &mut self.e_in,
+                        &mut self.not_root_set, fidx, *dep);
+                }
+            }
+            None => {}
+        }
+    }
+
+    // An associated function to please the borrow checker. gross.
+    fn edge(
+        e_out: &mut HashMap<usize, Vec<usize>>,
+        e_in: &mut HashMap<usize, Vec<usize>>,
+        not_root_set: &mut HashSet<usize>,
+        out_node: usize,
+        in_node: usize
+    ) {
+        e_out.entry(out_node).or_insert(vec![]).push(in_node);
+        e_in.entry(in_node).or_insert(vec![]).push(out_node);
+        not_root_set.insert(in_node);
+    }
+
+    pub fn into_iter_topo(self) -> Topo {
+        let mut root_set = vec![];
+        for n in 0..self.jobs.len() {
+            if ! self.not_root_set.contains(&n) {
+                root_set.push(n);
+            }
+        }
+
+        trace!("::into_iter_topo jobs={:?}", self.jobs);
+        trace!("::into_iter_topo e_out={:?}", self.e_out);
+        trace!("::into_iter_topo e_in={:?}", self.e_in);
+        trace!("::into_iter_topo root_set={:?}", root_set);
+
+        Topo {
+            jobs: self.jobs,
+            e_out: self.e_out,
+            e_in: self.e_in,
+            root_set: root_set,
+        }
+    }
+}
+#[derive(Debug, Clone)]
+struct Forward {
+    from: usize,
+    to: usize,
+    priority: usize,
+}
+
+/// An iterator that returns forwarding directives in topological order
+/// using Kahn's Algorithm.
+struct Topo {
+    jobs: Vec<Forward>,
+    e_out: HashMap<usize, Vec<usize>>,
+    e_in: HashMap<usize, Vec<usize>>,
+    root_set: Vec<usize>,
+}
+
+impl Iterator for Topo {
+    type Item = Forward;
+    fn next(&mut self) -> Option<Forward> {
+        if let Some(next_job) = self.root_set.pop() {
+            let tgts = self.e_out.get(&next_job).unwrap_or(&vec![]).clone();
+            for tgt in tgts.iter() {
+                self.rm_edge(next_job, *tgt);
+
+                // If tgt has no incoming edges, add it to the root set.
+                if ! self.e_in.get(tgt).is_some() {
+                    self.root_set.push(*tgt);
+                }
+            }
+
+            Some(self.jobs[next_job].clone())
+        } else {
+            // there had better not be any cycles
+            debug_assert!(self.e_out.len() == 0);
+            debug_assert!(self.e_in.len() == 0);
+            None
+        }
+    }
+}
+
+impl Topo {
+    fn rm_edge(&mut self, node_out: usize, node_in: usize) {
+        let mut rm = false;
+        match self.e_out.get_mut(&node_out) {
+            Some(tgts) => {
+                let in_pos = tgts.iter().position(|t| *t == node_in);
+                match in_pos {
+                    Some(p) => { tgts.remove(p); },
+                    None => debug_assert!(false),
+                }
+
+                if tgts.len() == 0 {
+                    rm = true;
+                }
+            }
+            None => debug_assert!(false),
+        }
+        if rm {
+            self.e_out.remove(&node_out);
+        }
+
+        rm = false;
+        match self.e_in.get_mut(&node_in) {
+            Some(tgts) => {
+                let out_pos = tgts.iter().position(|t| *t == node_out);
+                match out_pos {
+                    Some(p) => { tgts.remove(p); },
+                    None => debug_assert!(false),
+                }
+
+                if tgts.len() == 0 {
+                    rm = true;
+                }
+            }
+            None => debug_assert!(false),
+        }
+        if rm {
+            self.e_in.remove(&node_in);
+        }
+    }
+}
+
 
 impl<'r> OnePassCompiler<'r> {
     /// Create a new OnePassCompiler for a given Hir.
@@ -249,6 +463,18 @@ impl<'r> OnePassCompiler<'r> {
                 is_anchored_start: prog.is_anchored_start,
             },
             prog: prog,
+
+            transitions: {
+                let mut x = Vec::new();
+                for _ in 0..prog.len() {
+                    x.push(None);
+                }
+                x
+            },
+
+            forwards: Forwards::new(),
+
+            /*
             compiled: {
                 let mut x = Vec::new();
                 for _ in 0..prog.len() {
@@ -256,11 +482,13 @@ impl<'r> OnePassCompiler<'r> {
                 }
                 x
             }
+            */
         })
     }
 
     /// Attempt to compile the regex to a OnePass DFA
     pub fn compile(mut self) -> Result<OnePass, OnePassError> {
+        /*
         {
             let p = try!(self.inst_patch(0)).clone();
 
@@ -269,10 +497,189 @@ impl<'r> OnePassCompiler<'r> {
             self.onepass.start_state =
                 p.ptr.expect("One entry point for the top level patch.");
         }
+        */
+
+        // Compute the prioritized transition tables for all of the
+        // instructions which get states.
+        let mut state_edge = vec![0];
+        while let Some(i) = state_edge.pop() {
+            state_edge.extend(try!(self.inst_trans(i)));
+        }
+
+        // Solve the dependency relationships between all the
+        // forwarding directives that were emitted by inst_trans.
+        try!(self.solve_forwards());
+
+        // Now emit the transitions in a form that we can actually
+        // execute.
+        self.emit_transitions();
+        self.onepass.start_state = 0 | STATE_SAVE;
 
         Ok(self.onepass)
     }
 
+    fn inst_trans(
+        &mut self,
+        inst_idx: usize
+    ) -> Result<Vec<usize>, OnePassError> {
+        trace!("::inst_trans inst_idx={}", inst_idx);
+
+        if self.transitions[inst_idx].is_some() {
+            return Ok(vec![]);
+        }
+
+        // Iterate over the children, visiting lower priority
+        // children first.
+        let mut resume = match &self.prog[inst_idx] {
+            &Inst::Save(ref inst) => vec![inst.goto],
+            &Inst::EmptyLook(ref inst) => vec![inst.goto],
+            &Inst::Bytes(ref inst) => vec![inst.goto],
+            &Inst::Split(ref inst) => vec![inst.goto1, inst.goto2],
+            &Inst::Match(_) => return Ok(vec![]), // no kids
+            &Inst::Ranges(_) | &Inst::Char(_) => unreachable!(),
+        };
+
+        let mut trans = TransitionTable(
+            vec![(TransitionTarget::Die, 0); self.onepass.num_byte_classes]);
+
+        // Start at 1 priority because everything is higher priority than
+        // the initial list of `TransitionTarget::Die` pointers.
+        let mut priority = 1;
+
+        let mut children = vec![];
+        while let Some(child_idx) = resume.pop() {
+            match &self.prog[child_idx] {
+                &Inst::Save(_) => {
+                    self.forward(inst_idx, child_idx, priority);
+                    children.push(child_idx);
+                }
+                &Inst::EmptyLook(ref inst) => {
+                    // TODO: impl
+                    resume.push(inst.goto);
+                }
+                &Inst::Bytes(ref inst) => {
+                    let bc = self.onepass.byte_classes[inst.start as usize];
+                    trans.0[bc as usize] =
+                        (TransitionTarget::Inst(child_idx), priority);
+                    children.push(child_idx);
+                }
+                &Inst::Split(ref inst) => {
+                    resume.push(inst.goto1);
+                    resume.push(inst.goto2);
+                }
+                &Inst::Match(_) => {
+                    for t in trans.0.iter_mut() {
+                        *t = (TransitionTarget::Match, priority);
+                    }
+                }
+                &Inst::Ranges(_) | &Inst::Char(_) => unreachable!(),
+            }
+            priority += 1;
+        }
+
+        self.transitions[inst_idx] = Some(trans);
+
+        Ok(children)
+    }
+
+    fn forward(&mut self, from: usize, to: usize, priority: usize) {
+        self.forwards.forward(from, to, priority);
+    }
+
+    fn solve_forwards(&mut self) -> Result<(), OnePassError> {
+        // TODO: drop the clone
+        for fwd in self.forwards.clone().into_iter_topo() {
+            debug_assert!(fwd.from != fwd.to);
+
+            let tgt = match &self.prog[fwd.to] {
+                &Inst::Save(_) => TransitionTarget::Save(fwd.to),
+                _ => TransitionTarget::Inst(fwd.to),
+            };
+
+            let (from_ts, to_ts) = if fwd.from < fwd.to {
+                let (stub, tail) = self.transitions.split_at_mut(fwd.to);
+                (&mut stub[fwd.from], &mut tail[0])
+            } else {
+                let (stub, tail) = self.transitions.split_at_mut(fwd.from);
+                (&mut tail[0], &mut stub[fwd.to])
+            };
+
+            // TODO: more elegant way to do this?
+            let (from_ts, to_ts) = match (from_ts, to_ts) {
+                (&mut Some(ref mut from_ts), &mut Some(ref to_ts)) => {
+                    (from_ts, to_ts)
+                }
+                _ => unreachable!("forwards must be between real nodes."),
+            };
+
+            // now shuffle the transitions from `to` to `from`.
+            for (to_t, from_t) in to_ts.0.iter().zip(from_ts.0.iter_mut()) {
+                // TODO: name these fields?
+                if to_t.0 == TransitionTarget::Die {
+                    continue;
+                }
+                if from_t.1 > fwd.priority {
+                    continue;
+                }
+                // we should never encounter equal priorities
+                debug_assert!(from_t.1 != fwd.priority);
+
+                *from_t = (tgt.clone(), fwd.priority);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn emit_transitions(&mut self) {
+        let mut state_starts = Vec::with_capacity(self.prog.len());
+        let mut off = 0;
+        for inst_idx in 0..self.prog.len() {
+            state_starts.push(off);
+            if self.transitions[inst_idx].is_some() {
+                off += self.onepass.num_byte_classes;
+
+                match &self.prog[inst_idx] {
+                    &Inst::Save(_) => {
+                        off += self.onepass.num_byte_classes;
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        for inst_idx in 0..self.prog.len() {
+            let mut trans = vec![];
+            match &self.transitions[inst_idx] {
+                &None => continue,
+                &Some(ref ttab) => {
+                    for &(ref tgt, _) in ttab.0.iter() {
+                        trans.push(match tgt {
+                            &TransitionTarget::Match => STATE_MATCH,
+                            &TransitionTarget::Die => STATE_DEAD,
+                            &TransitionTarget::Inst(i) =>
+                                state_starts[i] as StatePtr,
+                            &TransitionTarget::Save(i) =>
+                                (state_starts[i] as StatePtr) | STATE_SAVE,
+                        });
+                    }
+                }
+            }
+
+            self.onepass.table.extend(trans);
+
+            // emit save annotations if the instruction is a save instruction
+            match &self.prog[inst_idx] {
+                &Inst::Save(ref inst) =>
+                    self.onepass.table.extend(
+                        vec![inst.slot as StatePtr;
+                             self.onepass.num_byte_classes]),
+                _ => {}
+            }
+        }
+    }
+
+    /*
     /// For now we use direct recursive style
     fn inst_patch(&mut self, inst_idx: usize) -> Result<&Patch, OnePassError> {
         trace!("::inst_patch inst_idx={}", inst_idx);
@@ -400,9 +807,10 @@ impl<'r> OnePassCompiler<'r> {
 
         self.fuse_patch(p1, p2)
     }
+    */
 }
 
-
+/*
 /// The beginning of a transition table that needs to be
 /// patched to point to an EntryPoint.
 #[derive(Eq, PartialEq, Debug, Clone)]
@@ -458,6 +866,7 @@ impl Patch {
         self
     }
 }
+*/
 
 #[derive(Debug)]
 pub enum OnePassError {
