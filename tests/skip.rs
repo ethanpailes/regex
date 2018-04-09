@@ -254,6 +254,13 @@ macro_rules! skip_test {
                 assert_eq!(b"bbbb", &caps[1]);
             }
 
+            #[test]
+            fn skip_leading_estar() {
+                let re = regex(r"a*foo(bar)");
+                let caps = re.captures(b"aaaaaafoobar").unwrap();
+                assert_eq!(b"bar", &caps[1]);
+            }
+
         }
     }
 }
