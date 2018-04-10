@@ -76,30 +76,26 @@ impl OnePass {
         trace!("execing on '{:?}'\n{}", text, self);
 
         if self.is_anchored_start {
-            match self.exec_(slots, text, at) {
-                OnePassMatch::Match => true,
-                OnePassMatch::NoMatch(_) => false,
-            }
+            self.exec_(slots, text, at)
         } else {
-            // This is a do-while style loop instead of a normal
-            // while loop to handle empty regex.
+            // We are forced to just try every starting index.
+            // This is noticably more painful than it is for a
+            // standard DFA because we must clear the capture slots.
+            //
+            // TODO: add a [^fset]* prefix machine to cut down on
+            // the cost of zeroing the slots.
             loop {
-                trace!("begining execution at {}", at);
-                match self.exec_(slots, text, at) {
-                    OnePassMatch::Match => return true,
-                    OnePassMatch::NoMatch(last) => {
-                        // TODO: this will probably dominate the runtime
-                        //       cost. I need a [^fset]* prefix machine
-                        //       to make this a bit more bearable.
-                        for s in slots.iter_mut() {
-                            *s = None;
-                        }
-                        at = last + 1;
-                        trace!("NoMatch new_at={} text.len()={}", at, text.len());
+                if self.exec_(slots, text, at) {
+                    return true;
+                } else {
+                    trace!("NoMatch new_at={} text.len()={}", at + 1, text.len());
+                    for s in slots.iter_mut() {
+                        *s = None;
                     }
+                    at += 1;
                 }
 
-                if at >= text.len() {
+                if at > text.len() {
                     break;
                 }
             }
@@ -123,27 +119,21 @@ impl OnePass {
         slots: &mut [Slot],
         text: &[u8],
         mut at: usize
-    ) -> OnePassMatch {
+    ) -> bool {
         let mut state_ptr = self.start_state;
         trace!("::exec_ st={}", st_str(state_ptr));
 
         while at < text.len() {
             debug_assert!(state_ptr != STATE_POISON);
             let byte_class = self.byte_classes[text[at] as usize] as usize;
-            trace!("::exec_ loop st={} at={} bc={}",
-                        st_str(state_ptr), at, byte_class);
+            trace!("::exec_ loop st={} at={} bc={} byte={}",
+                        st_str(state_ptr), at, byte_class, text[at]);
 
             if state_ptr & STATE_SPECIAL == 0 {
-                at += 1;
-                if at >= text.len() {
-                    break;
-                }
-                let byte_class = self.byte_classes[text[at] as usize] as usize;
-
                 // No need to mask because no flags are set.
                 state_ptr = self.table[state_ptr as usize + byte_class];
             } else if state_ptr == STATE_DEAD {
-                return OnePassMatch::NoMatch(at);
+                return false;
             } else if state_ptr & STATE_SAVE != 0 {
                 // No state should ever have both the SAVE and MATCH
                 // flags set.
@@ -151,51 +141,43 @@ impl OnePass {
 
                 let state_idx = (state_ptr & STATE_MAX) as usize;
 
-                // the second save entry is filled with the save slots
+                // the second table entry is filled with the save slots
                 // that we need to fill.
                 let slot_idx = self.table[state_idx + self.num_byte_classes];
                 slots[slot_idx as usize] = Some(at);
 
                 state_ptr = self.table[state_idx + byte_class];
             } else if state_ptr == STATE_MATCH {
-                if ! self.is_anchored_end {
-                    return OnePassMatch::Match;
-                } else {
-                    return OnePassMatch::NoMatch(at);
-                }
+                return !self.is_anchored_end;
             } else {
                 unreachable!();
+            }
+
+            // TODO: get rid of this branch
+            if state_ptr & STATE_SPECIAL == 0 {
+                at += 1;
             }
         }
 
         // set the byte class to be EOF
         let byte_class = self.num_byte_classes - 1;
-        trace!("::exec eof st={} bc={}", st_str(state_ptr), byte_class);
+        trace!("::exec eof st={} at={} bc={}", st_str(state_ptr), at, byte_class);
         if state_ptr & STATE_SPECIAL == 0 {
             state_ptr = self.table[state_ptr as usize + byte_class];
         }
 
         while state_ptr & STATE_SAVE != 0 {
             trace!("::exec eof save");
-            // No state should ever have both the SAVE and MATCH
-            // flags set.
             debug_assert!(state_ptr & STATE_MATCH == 0);
 
             let state_idx = (state_ptr & STATE_MAX) as usize;
-
-            // the second save entry is filled with the save slots
-            // that we need to fill.
             let slot_idx = self.table[state_idx + self.num_byte_classes];
             slots[slot_idx as usize] = Some(at);
 
             state_ptr = self.table[state_idx + byte_class];
         }
 
-        if state_ptr == STATE_MATCH {
-            OnePassMatch::Match
-        } else {
-            OnePassMatch::NoMatch(at)
-        }
+        state_ptr == STATE_MATCH
     }
 
     fn fmt_line(
@@ -210,11 +192,6 @@ impl OnePass {
                      .join(" | ")));
         Ok(())
     }
-}
-
-enum OnePassMatch {
-    Match,
-    NoMatch(usize),
 }
 
 /// Compiler for a OnePass DFA
@@ -385,9 +362,19 @@ impl Iterator for Topo {
 
             Some(self.jobs[next_job].clone())
         } else {
-            // there had better not be any cycles
+            // TODO: just give up in the event of cycles, even
+            //       though this rules out valid onepass regex?
+            // 
+            // It might be worth adding checks to see if I ever
+            // overwrite a transition and giving up in those
+            // cases. I could not even look at first sets when
+            // trying to determine onepassness. Instead I just
+            // charge ahead with building a onepass DFA and
+            // give up at the first sign of nondeterminism.
+
             debug_assert!(self.e_out.len() == 0);
             debug_assert!(self.e_in.len() == 0);
+            
             None
         }
     }
@@ -456,14 +443,13 @@ impl<'r> OnePassCompiler<'r> {
         Ok(OnePassCompiler {
             onepass: OnePass {
                 table: vec![],
-                num_byte_classes: (prog.byte_classes[255] as usize) + 1,
+                num_byte_classes: (prog.byte_classes[255] as usize) + 2,
                 byte_classes: prog.byte_classes.clone(),
                 start_state: 0,
                 is_anchored_end: prog.is_anchored_end,
                 is_anchored_start: prog.is_anchored_start,
             },
             prog: prog,
-
             transitions: {
                 let mut x = Vec::new();
                 for _ in 0..prog.len() {
@@ -471,34 +457,12 @@ impl<'r> OnePassCompiler<'r> {
                 }
                 x
             },
-
             forwards: Forwards::new(),
-
-            /*
-            compiled: {
-                let mut x = Vec::new();
-                for _ in 0..prog.len() {
-                    x.push(None);
-                }
-                x
-            }
-            */
         })
     }
 
     /// Attempt to compile the regex to a OnePass DFA
     pub fn compile(mut self) -> Result<OnePass, OnePassError> {
-        /*
-        {
-            let p = try!(self.inst_patch(0)).clone();
-
-            // all paths should end up pointing to a match instruction
-            debug_assert!(p.holes.len() == 0);
-            self.onepass.start_state =
-                p.ptr.expect("One entry point for the top level patch.");
-        }
-        */
-
         // Compute the prioritized transition tables for all of the
         // instructions which get states.
         let mut state_edge = vec![0];
@@ -558,9 +522,11 @@ impl<'r> OnePassCompiler<'r> {
                     resume.push(inst.goto);
                 }
                 &Inst::Bytes(ref inst) => {
-                    let bc = self.onepass.byte_classes[inst.start as usize];
-                    trans.0[bc as usize] =
-                        (TransitionTarget::Inst(child_idx), priority);
+                    for byte in inst.start..(inst.end + 1) {
+                        let bc = self.onepass.byte_classes[byte as usize];
+                        trans.0[bc as usize] =
+                            (TransitionTarget::Inst(child_idx), priority);
+                    }
                     children.push(child_idx);
                 }
                 &Inst::Split(ref inst) => {
