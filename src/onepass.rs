@@ -51,6 +51,8 @@ pub struct OnePass {
 
 impl fmt::Display for OnePass {
     fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+        try!(writeln!(f, "is_anchored_start: {}", self.is_anchored_start));
+        try!(writeln!(f, "is_anchored_end: {}", self.is_anchored_end));
         try!(writeln!(f, "START: {}\n", st_str(self.start_state)));
 
         for i in 0..(self.table.len() / self.num_byte_classes) {
@@ -70,55 +72,65 @@ impl OnePass {
     /// Execute the one-pass DFA, populating the list of capture slots
     /// as you go.
     ///
-    /// TODO: ask @burntsushi about doing the right thing WRT regexsets
+    /// TODO(ethan): ask @burntsushi about doing the right thing WRT regexsets
     ///       here.
     pub fn exec(&self, slots: &mut [Slot], text: &[u8], mut at: usize) -> bool {
         trace!("execing on '{:?}'\n{}", text, self);
 
         if self.is_anchored_start {
-            self.exec_(slots, text, at)
+            self.exec_(text, at, slots)
         } else {
             // We are forced to just try every starting index.
-            // This is noticably more painful than it is for a
+            // This is noticeably more painful than it is for a
             // standard DFA because we must clear the capture slots.
             //
-            // TODO: add a [^fset]* prefix machine to cut down on
-            // the cost of zeroing the slots.
+            // To try to cut down on the cost of zeroing the capture
+            // groups, we implement a very simple FSM that just
+            // repeatedly tests to see if the very first DFA
+            // state could make progress.
             loop {
-                if self.exec_(slots, text, at) {
+                trace!("NoMatch new_at={} text.len()={}", at + 1, text.len());
+                if self.exec_(text, at, slots) {
                     return true;
-                } else {
-                    trace!("NoMatch new_at={} text.len()={}", at + 1, text.len());
-                    for s in slots.iter_mut() {
-                        *s = None;
-                    }
-                    at += 1;
                 }
 
+                for s in slots.iter_mut() {
+                    *s = None;
+                }
+
+                at = self.exec_prefix(text, at + 1);
                 if at > text.len() {
-                    break;
+                    return false;
                 }
             }
-
-            false
         }
     }
 
+    /// Given the input and a position in the input, return next
+    /// position where a match will actually make one character
+    /// of progress.
+    fn exec_prefix(&self, text: &[u8], mut at: usize) -> usize {
+        while at < text.len() {
+            let byte_class = self.byte_classes[text[at] as usize] as usize;
+            if self.table[byte_class] != STATE_DEAD {
+                break;
+            }
+            at += 1;
+        }
+
+        at
+    }
 
     /// Execute the one-pass DFA, populating the list of capture slots
     /// as you go.
     ///
-    /// Returns Match if there is a match and NoMatch(final string pointer)
-    /// otherwise.
-    ///
-    /// TODO: ask @burntsushi about doing the right thing WRT regexsets
-    ///       here.
+    /// Returns true if there is a match and false otherwise.
     #[inline]
     fn exec_(
         &self,
-        slots: &mut [Slot],
         text: &[u8],
-        mut at: usize
+        mut at: usize,
+        slots: &mut [Slot]
     ) -> bool {
         let mut state_ptr = self.start_state;
         trace!("::exec_ st={}", st_str(state_ptr));
@@ -153,7 +165,7 @@ impl OnePass {
                 unreachable!();
             }
 
-            // TODO: get rid of this branch
+            // TODO(ethan):perf get rid of this branch
             if state_ptr & STATE_SPECIAL == 0 {
                 at += 1;
             }
@@ -195,8 +207,6 @@ impl OnePass {
 }
 
 /// Compiler for a OnePass DFA
-///
-/// TODO: figure out how to avoid cloning patches quite so often.
 pub struct OnePassCompiler<'r> {
     onepass: OnePass,
     prog: &'r Program,
@@ -205,14 +215,16 @@ pub struct OnePassCompiler<'r> {
     transitions: Vec<Option<TransitionTable>>,
 
     forwards: Forwards,
-
-    // A mapping from instruction indicies to their patches.
-    // compiled: Vec<Option<Patch>>,
 }
 
 // A mapping from byte classes to target states annotated
 // with transition priority. An intermediary representation.
-struct TransitionTable(Vec<(TransitionTarget, usize)>);
+struct TransitionTable(Vec<Transition>);
+#[derive(Debug, Clone)]
+struct Transition {
+    tgt: TransitionTarget,
+    priority: usize,
+}
 #[derive(Debug, Clone, Eq, PartialEq)]
 enum TransitionTarget {
     Die,
@@ -230,7 +242,7 @@ enum TransitionTarget {
 /// Use hash sets rather than arrays because I expect the mapping
 /// to be sparse.
 ///
-/// TODO: there are more clones that I am comfortable with here.
+/// TODO(ethan):yakshaving there are more clones that I am comfortable with here.
 #[derive(Debug, Clone)]
 struct Forwards {
     jobs: Vec<Forward>,
@@ -347,8 +359,8 @@ struct Topo {
 }
 
 impl Iterator for Topo {
-    type Item = Forward;
-    fn next(&mut self) -> Option<Forward> {
+    type Item = Result<Forward, OnePassError>;
+    fn next(&mut self) -> Option<Result<Forward, OnePassError>> {
         if let Some(next_job) = self.root_set.pop() {
             let tgts = self.e_out.get(&next_job).unwrap_or(&vec![]).clone();
             for tgt in tgts.iter() {
@@ -360,22 +372,13 @@ impl Iterator for Topo {
                 }
             }
 
-            Some(self.jobs[next_job].clone())
+            Some(Ok(self.jobs[next_job].clone()))
         } else {
-            // TODO: just give up in the event of cycles, even
-            //       though this rules out valid onepass regex?
-            // 
-            // It might be worth adding checks to see if I ever
-            // overwrite a transition and giving up in those
-            // cases. I could not even look at first sets when
-            // trying to determine onepassness. Instead I just
-            // charge ahead with building a onepass DFA and
-            // give up at the first sign of nondeterminism.
-
-            debug_assert!(self.e_out.len() == 0);
-            debug_assert!(self.e_in.len() == 0);
-            
-            None
+            if self.e_out.len() != 0 || self.e_in.len() != 0 {
+                Some(Err(OnePassError::ForwardingCycle))
+            } else {
+                None
+            }
         }
     }
 }
@@ -504,7 +507,8 @@ impl<'r> OnePassCompiler<'r> {
         };
 
         let mut trans = TransitionTable(
-            vec![(TransitionTarget::Die, 0); self.onepass.num_byte_classes]);
+            vec![Transition { tgt: TransitionTarget::Die, priority: 0 };
+                 self.onepass.num_byte_classes]);
 
         // Start at 1 priority because everything is higher priority than
         // the initial list of `TransitionTarget::Die` pointers.
@@ -524,8 +528,10 @@ impl<'r> OnePassCompiler<'r> {
                 &Inst::Bytes(ref inst) => {
                     for byte in inst.start..(inst.end + 1) {
                         let bc = self.onepass.byte_classes[byte as usize];
-                        trans.0[bc as usize] =
-                            (TransitionTarget::Inst(child_idx), priority);
+                        trans.0[bc as usize] = Transition {
+                            tgt: TransitionTarget::Inst(child_idx),
+                            priority: priority
+                        };
                     }
                     children.push(child_idx);
                 }
@@ -535,7 +541,10 @@ impl<'r> OnePassCompiler<'r> {
                 }
                 &Inst::Match(_) => {
                     for t in trans.0.iter_mut() {
-                        *t = (TransitionTarget::Match, priority);
+                        *t = Transition {
+                            tgt: TransitionTarget::Match,
+                            priority: priority
+                        };
                     }
                 }
                 &Inst::Ranges(_) | &Inst::Char(_) => unreachable!(),
@@ -553,8 +562,9 @@ impl<'r> OnePassCompiler<'r> {
     }
 
     fn solve_forwards(&mut self) -> Result<(), OnePassError> {
-        // TODO: drop the clone
+        // TODO(ethan):yakshaving drop the clone
         for fwd in self.forwards.clone().into_iter_topo() {
+            let fwd = try!(fwd);
             debug_assert!(fwd.from != fwd.to);
 
             let tgt = match &self.prog[fwd.to] {
@@ -570,7 +580,6 @@ impl<'r> OnePassCompiler<'r> {
                 (&mut tail[0], &mut stub[fwd.to])
             };
 
-            // TODO: more elegant way to do this?
             let (from_ts, to_ts) = match (from_ts, to_ts) {
                 (&mut Some(ref mut from_ts), &mut Some(ref to_ts)) => {
                     (from_ts, to_ts)
@@ -580,17 +589,20 @@ impl<'r> OnePassCompiler<'r> {
 
             // now shuffle the transitions from `to` to `from`.
             for (to_t, from_t) in to_ts.0.iter().zip(from_ts.0.iter_mut()) {
-                // TODO: name these fields?
-                if to_t.0 == TransitionTarget::Die {
+                if to_t.tgt == TransitionTarget::Die {
                     continue;
                 }
-                if from_t.1 > fwd.priority {
+                if from_t.priority > fwd.priority {
                     continue;
                 }
-                // we should never encounter equal priorities
-                debug_assert!(from_t.1 != fwd.priority);
 
-                *from_t = (tgt.clone(), fwd.priority);
+                // we should never encounter equal priorities
+                debug_assert!(from_t.priority != fwd.priority);
+
+                *from_t = Transition {
+                    tgt: tgt.clone(),
+                    priority: fwd.priority,
+                };
             }
         }
 
@@ -619,13 +631,13 @@ impl<'r> OnePassCompiler<'r> {
             match &self.transitions[inst_idx] {
                 &None => continue,
                 &Some(ref ttab) => {
-                    for &(ref tgt, _) in ttab.0.iter() {
-                        trans.push(match tgt {
-                            &TransitionTarget::Match => STATE_MATCH,
-                            &TransitionTarget::Die => STATE_DEAD,
-                            &TransitionTarget::Inst(i) =>
+                    for t in ttab.0.iter() {
+                        trans.push(match t.tgt {
+                            TransitionTarget::Match => STATE_MATCH,
+                            TransitionTarget::Die => STATE_DEAD,
+                            TransitionTarget::Inst(i) =>
                                 state_starts[i] as StatePtr,
-                            &TransitionTarget::Save(i) =>
+                            TransitionTarget::Save(i) =>
                                 (state_starts[i] as StatePtr) | STATE_SAVE,
                         });
                     }
@@ -644,200 +656,16 @@ impl<'r> OnePassCompiler<'r> {
             }
         }
     }
-
-    /*
-    /// For now we use direct recursive style
-    fn inst_patch(&mut self, inst_idx: usize) -> Result<&Patch, OnePassError> {
-        trace!("::inst_patch inst_idx={}", inst_idx);
-
-        // These odd looking acrobatics are the please the borrow checker.
-        if self.compiled[inst_idx].is_some() {
-            match &self.compiled[inst_idx] {
-                &Some(ref p) => return Ok(p),
-                &None => unreachable!(),
-            }
-        }
-
-        let patch = match &self.prog[inst_idx] {
-            &Inst::Match(_) => {
-                // A match has no transition table. It exists only as
-                // match pointers in the transition tables of other states.
-                Patch {
-                    entry: EntryPoint(vec![STATE_MATCH;
-                                           self.onepass.num_byte_classes]),
-                    holes: vec![],
-                    ptr: Some(STATE_MATCH),
-                }
-            }
-            &Inst::Save(ref inst) => {
-                let p = self.save_patch(inst.slot);
-                let next_p = try!(self.inst_patch(inst.goto)).clone();
-
-                self.forward_patch(p, next_p)
-            }
-            &Inst::EmptyLook(ref inst) => {
-                // TODO: unimplimented for now
-                return self.inst_patch(inst.goto);
-            }
-            &Inst::Bytes(ref inst) => {
-                let byte_class =
-                    self.onepass.byte_classes[inst.start as usize] as usize;
-                let p = self.byte_class_patch(byte_class);
-                let next_p = try!(self.inst_patch(inst.goto)).clone();
-                self.fuse_patch(p, next_p)
-            }
-            &Inst::Split(ref inst) => {
-                let p1 = try!(self.inst_patch(inst.goto1)).clone();
-                let p2 = try!(self.inst_patch(inst.goto2));
-
-                p1.or(p2)
-            }
-            &Inst::Char(_) | &Inst::Ranges(_) => unreachable!(),
-        };
-
-        self.compiled[inst_idx] = Some(patch);
-        match &self.compiled[inst_idx] {
-            &Some(ref p) => Ok(p),
-            &None => unreachable!()
-        }
-    }
-
-    //
-    // Patch Methods
-    //
-
-    fn save_patch(&mut self, slot: usize) -> Patch {
-        // All of the entry points to a save patch come from its children.
-        // They will get patched in forward_patch
-        let entry = vec![STATE_POISON; self.onepass.num_byte_classes];
-        let addr = self.onepass.table.len();
-        self.onepass.table.extend(
-            vec![STATE_DEAD; self.onepass.num_byte_classes]);
-        self.onepass.table.extend(
-            vec![slot as StatePtr; self.onepass.num_byte_classes]);
-
-        Patch {
-            entry: EntryPoint(entry),
-            holes: vec![Hole(addr)],
-            ptr: Some(addr as StatePtr | STATE_SAVE),
-        }
-    }
-
-    fn byte_class_patch(&mut self, byte_class: usize) -> Patch {
-        let addr = self.onepass.table.len();
-        let mut entry = vec![STATE_POISON; self.onepass.num_byte_classes];
-        entry[byte_class] = addr as StatePtr;
-
-        self.onepass.table.extend(
-            vec![STATE_DEAD; self.onepass.num_byte_classes]);
-
-        Patch {
-            entry: EntryPoint(entry),
-            holes: vec![Hole(addr)],
-            ptr: Some(addr as StatePtr),
-        }
-    }
-
-    /// Fuse two patches together so that they must occur sequentially.
-    fn fuse_patch(&mut self, p1: Patch, p2: Patch) -> Patch {
-        for &Hole(ts_start) in p1.holes.iter() {
-            let ts_end = ts_start + self.onepass.num_byte_classes;
-            let ts = &mut self.onepass.table[ts_start..ts_end];
-
-            ts.iter_mut().enumerate().for_each(|(i, t)| {
-                if p2.entry.0[i] != STATE_POISON {
-                    debug_assert_eq!(
-                        p2.ptr.unwrap_or(p2.entry.0[i]), p2.entry.0[i]);
-
-                    *t = p2.ptr.unwrap_or(p2.entry.0[i]);
-                }
-            })
-        }
-
-        Patch {
-            entry: p1.entry,
-            holes: p2.holes,
-            ptr: p1.ptr,
-        }
-    }
-
-    /// Just like fuse_patch, except that the EntryPoints from p2 are
-    /// copied over to p1 so that anything that would enter p2 also
-    /// enters the new patch
-    fn forward_patch(&mut self, mut p1: Patch, p2: Patch) -> Patch {
-        for (i, e) in p2.entry.0.iter().enumerate() {
-            if *e != STATE_POISON {
-                p1.entry.0[i] = p1.ptr.expect("Can't forward a split patch.");
-            }
-        }
-
-        self.fuse_patch(p1, p2)
-    }
-    */
 }
-
-/*
-/// The beginning of a transition table that needs to be
-/// patched to point to an EntryPoint.
-#[derive(Eq, PartialEq, Debug, Clone)]
-struct Hole(usize);
-
-/// A mapping from byte classes to state pointers which
-/// indicate compiled states.
-#[derive(Debug, Clone)]
-struct EntryPoint(Vec<StatePtr>);
-
-#[derive(Debug, Clone)]
-struct Patch {
-    entry: EntryPoint,
-    holes: Vec<Hole>,
-    /// If there is just one entry point, the pointer to that entry
-    /// point.
-    ptr: Option<StatePtr>,
-}
-
-impl Patch {
-    /// Combine two patches with a branch between them.
-    ///
-    /// `self` has higher precidence than `patch`
-    fn or(mut self, patch: &Patch) -> Patch {
-        // We have to collapse the flags onto the EntryPoints of
-        // the patches now so that they can be differentiated.
-        self.ptr.map(|p| {
-            for e in self.entry.0.iter_mut() {
-                if *e != STATE_POISON {
-                    *e = p;
-                }
-            }
-        });
-        self.ptr = None;
-        let mut patch_entry = patch.entry.0.clone();
-        patch.ptr.map(|p| {
-            for e in patch_entry.iter_mut() {
-                if *e != STATE_POISON {
-                    *e = p;
-                }
-            }
-        });
-
-        for (i, e2) in patch_entry.iter().enumerate() {
-            if *e2 == STATE_POISON || self.entry.0[i] != STATE_POISON {
-                continue;
-            }
-
-            self.entry.0[i] = *e2;
-        }
-        self.holes.extend(patch.holes.clone());
-
-        self
-    }
-}
-*/
 
 #[derive(Debug)]
 pub enum OnePassError {
     /// This program can't be executed as a one-pass regex.
     NotOnePass,
+    /// This program contains a cycle of instructions that consume
+    /// no input. Right now we can't handle that, but this restriction
+    /// may be lifted in the future.
+    ForwardingCycle,
     /// There are too many instructions to deal with.
     TooBig,
     /// We don't yet support unicode OnePass execution.
