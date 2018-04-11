@@ -147,7 +147,7 @@ impl ExecBuilder {
             match_type: None,
             bytes: false,
             only_utf8: true,
-        }
+        }//.onepass().bytes(true)
     }
 
     /// Set the matching engine to be automatically determined.

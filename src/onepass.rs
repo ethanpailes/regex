@@ -20,10 +20,11 @@ a few nice properties that we can leverage.
 
 use std::fmt;
 use prog::{Program, Inst};
+use literals::LiteralSearcher;
 use re_trait::Slot; use std::collections::{HashMap, HashSet};
 
 // flip to true for debugging
-const TRACE: bool = true;
+const TRACE: bool = false;
 macro_rules! trace {
     ($($tts:tt)*) => {
         if TRACE {
@@ -37,6 +38,10 @@ macro_rules! trace {
 pub struct OnePass {
     /// The table.
     table: Vec<StatePtr>,
+    /// The prefixes.
+    ///
+    /// TODO(ethan):yakshaving this should probably be borrowed.
+    prefixes: LiteralSearcher,
     /// The stride.
     num_byte_classes: usize,
     /// The byte classes of this regex.
@@ -78,7 +83,7 @@ impl OnePass {
         trace!("execing on '{:?}'\n{}", text, self);
 
         if self.is_anchored_start {
-            self.exec_(text, at, slots)
+            at == 0 && self.exec_(text, at, slots)
         } else {
             // We are forced to just try every starting index.
             // This is noticeably more painful than it is for a
@@ -89,7 +94,8 @@ impl OnePass {
             // repeatedly tests to see if the very first DFA
             // state could make progress.
             loop {
-                trace!("NoMatch new_at={} text.len()={}", at + 1, text.len());
+                trace!("Trying to match at={} text.len()={}",
+                        at, text.len());
                 if self.exec_(text, at, slots) {
                     return true;
                 }
@@ -110,13 +116,23 @@ impl OnePass {
     /// position where a match will actually make one character
     /// of progress.
     fn exec_prefix(&self, text: &[u8], mut at: usize) -> usize {
-        while at < text.len() {
-            let byte_class = self.byte_classes[text[at] as usize] as usize;
-            if self.table[byte_class] != STATE_DEAD {
-                break;
+        trace!("::exec_prefix at={}", at);
+        if !self.prefixes.is_empty() {
+            at = at + self.prefixes
+                .find(&text[at..])
+                .map(|(s, _)| s)
+                .unwrap_or(text.len());
+        } else {
+            while at < text.len() {
+                let byte_class = self.byte_classes[text[at] as usize] as usize;
+                if self.table[byte_class] != STATE_DEAD {
+                    break;
+                }
+                at += 1;
             }
-            at += 1;
         }
+
+        trace!("::exec_prefix next-chance={}", at);
 
         at
     }
@@ -133,23 +149,84 @@ impl OnePass {
         slots: &mut [Slot]
     ) -> bool {
         let mut state_ptr = self.start_state;
-        trace!("::exec_ st={}", st_str(state_ptr));
 
-        while at < text.len() {
-            debug_assert!(state_ptr != STATE_POISON);
-            let byte_class = self.byte_classes[text[at] as usize] as usize;
-            trace!("::exec_ loop st={} at={} bc={} byte={}",
+        //
+        // The inner loop of the onepass DFA.
+        //
+        // We bend over backwards to make sure that the inner loop
+        // logically looks like:
+        // 
+        // while at < text.len():
+        //    state_ptr = self.transitions[state_ptr + text[at]]
+        //
+        // As usual, this is a horrible lie. The onepass DFA steals
+        // the byteclass compression trick from the lazy DFA, so there
+        // is an extra layer of indirection. Any special flags need to
+        // be handled, so we also need to check the STATE_SPECIAL mask
+        // at every step. Finally, we use a backstop instead of the
+        // actual text.len() to check when it is time to break out of
+        // the loop to facilitate loop unrolling, and to avoid an
+        // extra branch around when it is time to increment at.
+        let step_size = 1;
+        let backstop = text.len().checked_sub(step_size).unwrap_or(0);
+        while at < backstop {
+            if state_ptr & STATE_SPECIAL == 0 {
+                // This is a weird looking place to increment at.
+                // The reason we do so has to do with the odd
+                // representation of a DFA that we've chosen.
+                // Let's dump the simplest possible regex to unpack
+                // that.
+                //
+                // ```text
+                // > cd regex-debug
+                // > cargo run -- --onepass compile 'a'
+                // is_anchored_start: false
+                // is_anchored_end: false
+                // START: (0)
+                //
+                // 0: 0/D | 1/8 | 2/D | 3/D
+                // 4: 0/0 | 1/0 | 2/0 | 3/0
+                // 8: 0/(c) | 1/(c) | 2/(c) | 3/(c)
+                // c: 0/M | 1/M | 2/M | 3/M
+                // 10: 0/1 | 1/1 | 2/1 | 3/1
+                // ```
+                //
+                // Our initial state is denoted (0) because it's transition
+                // table lives at self.table[0] and because it is a
+                // saving state. This means that it does not correspond
+                // to the consumption of any input, yet its transition
+                // table is derived from its child states. In this
+                // case its only child state is 8. When we transition
+                // to state 8, the assertion that the first byte be
+                // 97 has already passed. Then we can't just increment
+                // at after every input consuming state, as you might
+                // think at first. The assertions associated with a state
+                // really get checked right before we enter it, so the
+                // right thing to do is to increment at only when we
+                // enter an input consuming state.
+                //
+                // One might be concerned that this will cause us to
+                // skip over the very first byte, but we are saved by
+                // the fact that the first instruction is always a save
+                // instruction.
+                at += 1;
+                let byte_class = self.byte_class(text, at);
+
+                trace!("::exec_ loop-byte st={} at={} bc={} byte={}",
                         st_str(state_ptr), at, byte_class, text[at]);
 
-            if state_ptr & STATE_SPECIAL == 0 {
-                // No need to mask because no flags are set.
-                state_ptr = self.table[state_ptr as usize + byte_class];
+                // No need to mask because there are no flags.
+                state_ptr = self.follow(state_ptr as usize, byte_class);
             } else if state_ptr == STATE_DEAD {
                 return false;
             } else if state_ptr & STATE_SAVE != 0 {
                 // No state should ever have both the SAVE and MATCH
                 // flags set.
                 debug_assert!(state_ptr & STATE_MATCH == 0);
+
+                let byte_class = self.byte_class(text, at);
+                trace!("::exec_ loop-save st={} at={} bc={} byte={}",
+                        st_str(state_ptr), at, byte_class, text[at]);
 
                 let state_idx = (state_ptr & STATE_MAX) as usize;
 
@@ -158,26 +235,74 @@ impl OnePass {
                 let slot_idx = self.table[state_idx + self.num_byte_classes];
                 slots[slot_idx as usize] = Some(at);
 
-                state_ptr = self.table[state_idx + byte_class];
+                state_ptr = self.follow(state_idx, byte_class);
+            } else if state_ptr == STATE_MATCH {
+                return !self.is_anchored_end;
+            } else {
+                unreachable!();
+            }
+        }
+
+        //
+        // Drain the input after the backstop.
+        //
+
+        // First, bump the at pointer if we just passed a byte test.
+        if state_ptr & STATE_SPECIAL == 0 {
+            at += 1;
+        }
+        while at < text.len() {
+            let byte_class = self.byte_class(text, at);
+
+            if state_ptr & STATE_SPECIAL == 0 {
+                trace!("::exec_ drain-byte st={} at={} bc={} byte={}",
+                        st_str(state_ptr), at, byte_class, text[at]);
+
+                // No need to mask because no flags are set.
+                state_ptr = self.follow(state_ptr as usize, byte_class);
+            } else if state_ptr == STATE_DEAD {
+                return false;
+            } else if state_ptr & STATE_SAVE != 0 {
+                debug_assert!(state_ptr & STATE_MATCH == 0);
+
+                let byte_class = self.byte_class(text, at);
+                trace!("::exec_ drain-save st={} at={} bc={} byte={}",
+                        st_str(state_ptr), at, byte_class, text[at]);
+
+                let state_idx = (state_ptr & STATE_MAX) as usize;
+
+                // the second table entry is filled with the save slots
+                // that we need to fill.
+                let slot_idx = self.table[state_idx + self.num_byte_classes];
+                slots[slot_idx as usize] = Some(at);
+
+                state_ptr = self.follow(state_idx, byte_class);
             } else if state_ptr == STATE_MATCH {
                 return !self.is_anchored_end;
             } else {
                 unreachable!();
             }
 
-            // TODO(ethan):perf get rid of this branch
+            // We incur the cost of this extra branch in the drain
+            // loop because we need to make sure that we won't fly
+            // off the end of the string.
             if state_ptr & STATE_SPECIAL == 0 {
                 at += 1;
             }
         }
 
-        // set the byte class to be EOF
+        //
+        // Execute one last step in the magic EOF byte class
+        //
+
+        // Set the byte class to be EOF
         let byte_class = self.num_byte_classes - 1;
         trace!("::exec eof st={} at={} bc={}", st_str(state_ptr), at, byte_class);
         if state_ptr & STATE_SPECIAL == 0 {
             state_ptr = self.table[state_ptr as usize + byte_class];
         }
 
+        // Finally, drain any non-input consuming states
         while state_ptr & STATE_SAVE != 0 {
             trace!("::exec eof save");
             debug_assert!(state_ptr & STATE_MATCH == 0);
@@ -189,7 +314,18 @@ impl OnePass {
             state_ptr = self.table[state_idx + byte_class];
         }
 
+        // All of that was only valid if we end up in a matching state.
         state_ptr == STATE_MATCH
+    }
+    
+    #[inline]
+    fn byte_class(&self, text: &[u8], at: usize) -> usize {
+        self.byte_classes[text[at] as usize] as usize
+    }
+
+    #[inline]
+    fn follow(&self, state_idx: usize, byte_class: usize) -> StatePtr {
+        self.table[state_idx + byte_class]
     }
 
     fn fmt_line(
@@ -233,16 +369,10 @@ enum TransitionTarget {
     Save(usize),
 }
 
-/// A mapping from target states to lists of (source state, priority) pairs.
+/// A (hopefully) DAG of forwarding jobs.
 ///
-/// The directionality here is a little counter intuitive, because we
-/// are trying to copy the transitions over from the targets to the
-/// sources.
-///
-/// Use hash sets rather than arrays because I expect the mapping
-/// to be sparse.
-///
-/// TODO(ethan):yakshaving there are more clones that I am comfortable with here.
+/// TODO(ethan):yakshaving there are more clones than I am comfortable
+///                        with here.
 #[derive(Debug, Clone)]
 struct Forwards {
     jobs: Vec<Forward>,
@@ -446,6 +576,7 @@ impl<'r> OnePassCompiler<'r> {
         Ok(OnePassCompiler {
             onepass: OnePass {
                 table: vec![],
+                prefixes: prog.prefixes.clone(),
                 num_byte_classes: (prog.byte_classes[255] as usize) + 2,
                 byte_classes: prog.byte_classes.clone(),
                 start_state: 0,
@@ -686,8 +817,6 @@ type StatePtr = u32;
 fn st_str(st: StatePtr) -> String {
     if st == STATE_DEAD {
         "D".to_string()
-    } else if st == STATE_POISON {
-        "P".to_string()
     } else {
         if st & STATE_SAVE != 0 {
             format!("({:x})", st & STATE_MAX)
@@ -721,15 +850,6 @@ const STATE_MATCH: StatePtr = 1 << 30;
 ///
 /// It is not valid to dereference STATE_DEAD.
 const STATE_DEAD: StatePtr = STATE_MATCH + 1;
-
-/// A poison state is used to fill in the transition table in places where
-/// it would not make sense to have a real state pointer.
-///
-/// This is a valid poison value because both the SAVE and MATCH flags
-/// cannot be set at the same time.
-///
-/// It is not valid to dereference STATE_POISON.
-const STATE_POISON: StatePtr = !0;
 
 /// The maximum state pointer. This is useful to mask out the "valid" state
 /// pointer from a state with the "start" or "match" bits set.
