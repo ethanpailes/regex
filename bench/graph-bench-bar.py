@@ -102,10 +102,18 @@ def height_of(h):
         return h
 
 def test_name_of(name):
-    return name[len("captures::cap_"):]
+    return bench_names[name[len("captures::cap_"):]]
 
 hatches = ['-', '+', 'x', '\\', '*', 'o', 'O', '.']
 colors = ['b', 'g', 'r', 'c', 'm', 'y', 'k']
+bench_names = {
+    "leading_dotstar": "Leading .*",
+    "leading_estar": "Leading el Scan",
+    "dotstar_bounce": ".* Bounce",
+    "a_big_skip": "A Big Skip",
+    "aplus_trailing": "Trailing .*",
+    "no_opt": "No Opt",
+}
 
 def slurp(csv_file):
     data = []

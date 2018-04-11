@@ -90,7 +90,7 @@ def test_name(test):
     return test[len("captures::cap_"):].replace("_", "-")
 
 def feature_name(feature):
-    return feature[len("catpures-"):].replace("ds-es-sl", "all")
+    return feature[len("captures-"):].replace("ds-es-sl", "all")
 
 if __name__ == "__main__":
     main()
