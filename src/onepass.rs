@@ -19,12 +19,14 @@ a few nice properties that we can leverage.
 */
 
 use std::fmt;
-use prog::{Program, Inst};
+use std::collections::{HashMap, HashSet};
+use prog::{Program, Inst, EmptyLook};
 use literals::LiteralSearcher;
-use re_trait::Slot; use std::collections::{HashMap, HashSet};
+use re_trait::Slot;
+use input::{ByteInput, Input};
 
 // flip to true for debugging
-const TRACE: bool = false;
+const TRACE: bool = true;
 macro_rules! trace {
     ($($tts:tt)*) => {
         if TRACE {
@@ -148,6 +150,10 @@ impl OnePass {
         mut at: usize,
         slots: &mut [Slot]
     ) -> bool {
+        // We re-use the NFA input machinery for empty looks. We are
+        // really going to work directly on the byte slice though.
+        let input = ByteInput::new(text, false);
+
         let mut state_ptr = self.start_state;
 
         //
@@ -219,23 +225,11 @@ impl OnePass {
                 state_ptr = self.follow(state_ptr as usize, byte_class);
             } else if state_ptr == STATE_DEAD {
                 return false;
-            } else if state_ptr & STATE_SAVE != 0 {
-                // No state should ever have both the SAVE and MATCH
-                // flags set.
-                debug_assert!(state_ptr & STATE_MATCH == 0);
-
+            } else if state_ptr & STATE_ACTION != 0 {
                 let byte_class = self.byte_class(text, at);
-                trace!("::exec_ loop-save st={} at={} bc={} byte={}",
+                trace!("::exec_ loop-act st={} at={} bc={} byte={}",
                         st_str(state_ptr), at, byte_class, text[at]);
-
-                let state_idx = (state_ptr & STATE_MAX) as usize;
-
-                // the second table entry is filled with the save slots
-                // that we need to fill.
-                let slot_idx = self.table[state_idx + self.num_byte_classes];
-                slots[slot_idx as usize] = Some(at);
-
-                state_ptr = self.follow(state_idx, byte_class);
+                state_ptr = self.act(input, at, slots, state_ptr, byte_class);
             } else if state_ptr == STATE_MATCH {
                 return !self.is_anchored_end;
             } else {
@@ -262,21 +256,11 @@ impl OnePass {
                 state_ptr = self.follow(state_ptr as usize, byte_class);
             } else if state_ptr == STATE_DEAD {
                 return false;
-            } else if state_ptr & STATE_SAVE != 0 {
-                debug_assert!(state_ptr & STATE_MATCH == 0);
-
+            } else if state_ptr & STATE_ACTION != 0 {
                 let byte_class = self.byte_class(text, at);
-                trace!("::exec_ drain-save st={} at={} bc={} byte={}",
+                trace!("::exec_ drain-act st={} at={} bc={} byte={}",
                         st_str(state_ptr), at, byte_class, text[at]);
-
-                let state_idx = (state_ptr & STATE_MAX) as usize;
-
-                // the second table entry is filled with the save slots
-                // that we need to fill.
-                let slot_idx = self.table[state_idx + self.num_byte_classes];
-                slots[slot_idx as usize] = Some(at);
-
-                state_ptr = self.follow(state_idx, byte_class);
+                state_ptr = self.act(input, at, slots, state_ptr, byte_class);
             } else if state_ptr == STATE_MATCH {
                 return !self.is_anchored_end;
             } else {
@@ -303,19 +287,66 @@ impl OnePass {
         }
 
         // Finally, drain any non-input consuming states
-        while state_ptr & STATE_SAVE != 0 {
+        while state_ptr & STATE_ACTION != 0 {
             trace!("::exec eof save");
-            debug_assert!(state_ptr & STATE_MATCH == 0);
-
-            let state_idx = (state_ptr & STATE_MAX) as usize;
-            let slot_idx = self.table[state_idx + self.num_byte_classes];
-            slots[slot_idx as usize] = Some(at);
-
-            state_ptr = self.table[state_idx + byte_class];
+            state_ptr = self.act(input, at, slots, state_ptr, byte_class);
         }
 
         // All of that was only valid if we end up in a matching state.
         state_ptr == STATE_MATCH
+    }
+
+    #[inline]
+    fn act<I: Input>(
+        &self,
+        input: I,
+        at: usize,
+        slots: &mut [Slot],
+        state_ptr: StatePtr,
+        byte_class: usize,
+    ) -> StatePtr {
+        // We had better have been called with a state that actually
+        // needs to be acted on.
+        debug_assert!(state_ptr & STATE_ACTION != 0);
+        // No state should have both flags set.
+        debug_assert!(state_ptr & STATE_MATCH == 0);
+
+        let state_idx = (state_ptr & STATE_MAX) as usize;
+        let action_type = self.table[state_idx + self.num_byte_classes];
+
+        if action_type == Action::Save as StatePtr {
+            let slot_idx = self.table[state_idx + self.num_byte_classes + 1];
+            trace!("::act saving slot {}", slot_idx);
+            slots[slot_idx as usize] = Some(at);
+
+            self.follow(state_idx, byte_class)
+        } else {
+            let iat = input.at(at);
+            let look = match action_type {
+                x if x == Action::StartLine as StatePtr => EmptyLook::StartLine,
+                x if x == Action::EndLine as StatePtr => EmptyLook::EndLine,
+                x if x == Action::StartText as StatePtr => EmptyLook::StartText,
+                x if x == Action::EndText as StatePtr => EmptyLook::EndText,
+                x if x == Action::WordBoundary as StatePtr =>
+                    EmptyLook::WordBoundary,
+                x if x == Action::NotWordBoundary as StatePtr =>
+                    EmptyLook::NotWordBoundary,
+                x if x == Action::WordBoundaryAscii as StatePtr =>
+                    EmptyLook::WordBoundaryAscii,
+                x if x == Action::NotWordBoundaryAscii as StatePtr =>
+                    EmptyLook::NotWordBoundaryAscii,
+                _ => unreachable!("Bad action flag."),
+            };
+
+            trace!("::act look={:?}", look);
+
+            if input.is_empty_match(iat, look) {
+                self.follow(state_idx, byte_class)
+            } else {
+                STATE_DEAD
+            }
+        }
+
     }
     
     #[inline]
@@ -365,8 +396,8 @@ struct Transition {
 enum TransitionTarget {
     Die,
     Match,
-    Inst(usize),
-    Save(usize),
+    BytesInst(usize),
+    ActionInst(usize),
 }
 
 /// A (hopefully) DAG of forwarding jobs.
@@ -561,7 +592,7 @@ impl<'r> OnePassCompiler<'r> {
     /// Collect some metadata from the compiled program.
     pub fn new(prog: &'r Program) -> Result<Self, OnePassError> {
         if ! prog.is_one_pass {
-            return Err(OnePassError::NotOnePass);
+            return Err(OnePassError::HasNondeterminism);
         }
 
         trace!("new compiler for:\n{:?}", prog);
@@ -611,7 +642,7 @@ impl<'r> OnePassCompiler<'r> {
         // Now emit the transitions in a form that we can actually
         // execute.
         self.emit_transitions();
-        self.onepass.start_state = 0 | STATE_SAVE;
+        self.onepass.start_state = 0 | STATE_ACTION;
 
         Ok(self.onepass)
     }
@@ -648,19 +679,15 @@ impl<'r> OnePassCompiler<'r> {
         let mut children = vec![];
         while let Some(child_idx) = resume.pop() {
             match &self.prog[child_idx] {
-                &Inst::Save(_) => {
+                &Inst::EmptyLook(_) | &Inst::Save(_) => {
                     self.forward(inst_idx, child_idx, priority);
                     children.push(child_idx);
-                }
-                &Inst::EmptyLook(ref inst) => {
-                    // TODO: impl
-                    resume.push(inst.goto);
                 }
                 &Inst::Bytes(ref inst) => {
                     for byte in inst.start..(inst.end + 1) {
                         let bc = self.onepass.byte_classes[byte as usize];
                         trans.0[bc as usize] = Transition {
-                            tgt: TransitionTarget::Inst(child_idx),
+                            tgt: TransitionTarget::BytesInst(child_idx),
                             priority: priority
                         };
                     }
@@ -699,8 +726,10 @@ impl<'r> OnePassCompiler<'r> {
             debug_assert!(fwd.from != fwd.to);
 
             let tgt = match &self.prog[fwd.to] {
-                &Inst::Save(_) => TransitionTarget::Save(fwd.to),
-                _ => TransitionTarget::Inst(fwd.to),
+                &Inst::EmptyLook(_) | &Inst::Save(_) =>
+                    TransitionTarget::ActionInst(fwd.to),
+                _ =>
+                    TransitionTarget::BytesInst(fwd.to),
             };
 
             let (from_ts, to_ts) = if fwd.from < fwd.to {
@@ -740,7 +769,11 @@ impl<'r> OnePassCompiler<'r> {
         Ok(())
     }
 
+    // Once all the per-instruction transition tables have been worked
+    // out, we can bake them into the single flat transition table we
+    // are going to use for the actual DFA.
     fn emit_transitions(&mut self) {
+        // pre-compute the state indicies
         let mut state_starts = Vec::with_capacity(self.prog.len());
         let mut off = 0;
         for inst_idx in 0..self.prog.len() {
@@ -749,7 +782,7 @@ impl<'r> OnePassCompiler<'r> {
                 off += self.onepass.num_byte_classes;
 
                 match &self.prog[inst_idx] {
-                    &Inst::Save(_) => {
+                    &Inst::EmptyLook(_) | &Inst::Save(_) => {
                         off += self.onepass.num_byte_classes;
                     }
                     _ => {}
@@ -758,7 +791,10 @@ impl<'r> OnePassCompiler<'r> {
         }
 
         for inst_idx in 0..self.prog.len() {
-            let mut trans = vec![];
+            let mut trans = Vec::with_capacity(
+                state_starts[state_starts.len() - 1]
+                + self.onepass.num_byte_classes);
+
             match &self.transitions[inst_idx] {
                 &None => continue,
                 &Some(ref ttab) => {
@@ -766,10 +802,10 @@ impl<'r> OnePassCompiler<'r> {
                         trans.push(match t.tgt {
                             TransitionTarget::Match => STATE_MATCH,
                             TransitionTarget::Die => STATE_DEAD,
-                            TransitionTarget::Inst(i) =>
+                            TransitionTarget::BytesInst(i) =>
                                 state_starts[i] as StatePtr,
-                            TransitionTarget::Save(i) =>
-                                (state_starts[i] as StatePtr) | STATE_SAVE,
+                            TransitionTarget::ActionInst(i) =>
+                                (state_starts[i] as StatePtr) | STATE_ACTION,
                         });
                     }
                 }
@@ -777,14 +813,40 @@ impl<'r> OnePassCompiler<'r> {
 
             self.onepass.table.extend(trans);
 
-            // emit save annotations if the instruction is a save instruction
+            // emit all the right window dressing for the action
             match &self.prog[inst_idx] {
-                &Inst::Save(ref inst) =>
-                    self.onepass.table.extend(
-                        vec![inst.slot as StatePtr;
-                             self.onepass.num_byte_classes]),
+                &Inst::Save(ref inst) => {
+                    debug_assert!(self.onepass.num_byte_classes >= 2);
+
+                    let mut save_args = vec![
+                        Action::Save as StatePtr,
+                        inst.slot as StatePtr];
+                    save_args.extend(vec![STATE_POISON;
+                        self.onepass.num_byte_classes - 2]);
+                    self.onepass.table.extend(save_args);
+                }
+                &Inst::EmptyLook(ref inst) => {
+                    let mut el_args = vec![self.empty_look_action(inst.look)];
+                    el_args.extend(vec![STATE_POISON;
+                        self.onepass.num_byte_classes - 1]);
+                    self.onepass.table.extend(el_args);
+                }
                 _ => {}
             }
+        }
+    }
+
+    fn empty_look_action(&self, el: EmptyLook) -> StatePtr {
+        match el {
+            EmptyLook::StartLine => Action::StartLine as StatePtr,
+            EmptyLook::EndLine => Action::EndLine as StatePtr,
+            EmptyLook::StartText => Action::StartText as StatePtr,
+            EmptyLook::EndText => Action::EndText as StatePtr,
+            EmptyLook::WordBoundary => Action::WordBoundary as StatePtr,
+            EmptyLook::NotWordBoundary => Action::NotWordBoundary as StatePtr,
+            EmptyLook::WordBoundaryAscii => Action::WordBoundaryAscii as StatePtr,
+            EmptyLook::NotWordBoundaryAscii =>
+                Action::NotWordBoundaryAscii as StatePtr,
         }
     }
 }
@@ -792,7 +854,7 @@ impl<'r> OnePassCompiler<'r> {
 #[derive(Debug)]
 pub enum OnePassError {
     /// This program can't be executed as a one-pass regex.
-    NotOnePass,
+    HasNondeterminism,
     /// This program contains a cycle of instructions that consume
     /// no input. Right now we can't handle that, but this restriction
     /// may be lifted in the future.
@@ -818,7 +880,9 @@ fn st_str(st: StatePtr) -> String {
     if st == STATE_DEAD {
         "D".to_string()
     } else {
-        if st & STATE_SAVE != 0 {
+        if st == STATE_POISON {
+            "P".to_string()
+        } else if st & STATE_ACTION != 0 {
             format!("({:x})", st & STATE_MAX)
         } else if st & STATE_MATCH != 0 {
             "M".to_string()
@@ -828,22 +892,36 @@ fn st_str(st: StatePtr) -> String {
     }
 }
 
-/// The CAP_SAVE state means that the DFA should save the current
-/// string pointer in a capture slot indicated by the first entry
-/// in its transition table.
-///
-/// Save instructions take up two transition table
-/// entries. The first entry indicates the save slot,
-/// while the second contains the actual transitions.
-/// A save state does not increment the string pointer,
-/// but just forwards control to the next state.
-const STATE_SAVE: StatePtr = 1 << 31;
+/// The ACTION state means that the DFA needs to take some
+/// action that will be specified by the first two StatePtrs
+/// in a special transition table entry just below the transition
+/// table for the ACTION state. An ACTION might include checking
+/// some zero-width assertion about the input, or it might include
+/// saving a value to a capture slots.
+const STATE_ACTION: StatePtr = 1 << 31;
+
+/// An action which might need to be taken for a special state.
+enum Action {
+    Save,
+    StartLine,
+    EndLine,
+    StartText,
+    EndText,
+    WordBoundary,
+    NotWordBoundary,
+    WordBoundaryAscii,
+    NotWordBoundaryAscii,
+}
 
 /// A match state means that the regex has successfully matched.
 ///
 /// It is not valid to dereference STATE_MATCH. We use a header
 /// bitflag anyway to facilitate special case checking.
 const STATE_MATCH: StatePtr = 1 << 30;
+
+/// POISON is a state pointer that should never be touched.
+/// We use it to pad invalid argument slots to ACTION states.
+const STATE_POISON: StatePtr = !0;
 
 /// A dead state means that the state has been computed and it is known that
 /// once it is entered, no future match can ever occur.
@@ -862,4 +940,4 @@ const STATE_MAX: StatePtr = STATE_MATCH - 1;
 /// STATE_SPECIAL is a bitmask useful for checking if we are dealing
 /// with a special case, or if we can keep chugging away at the inner
 /// loop.
-const STATE_SPECIAL: StatePtr = STATE_MATCH | STATE_SAVE;
+const STATE_SPECIAL: StatePtr = STATE_MATCH | STATE_ACTION;

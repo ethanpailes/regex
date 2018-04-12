@@ -85,6 +85,10 @@ pub fn is_one_pass(expr: &Hir) -> bool {
 
                     // For the regex /a|()+/, we don't have a way to
                     // differentiate the branches, so we are not onepass.
+                    //
+                    // We might be able to loosen this restriction by
+                    // considering the expression after the alternative
+                    // if there is one.
                     if fset.is_empty() || fset2.is_empty() {
                         return true;
                     }
