@@ -14,7 +14,17 @@ def main():
         exit(1)
 
     data = slurp(sys.argv[1])
-    tests = set(r["test_name"] for r in data)
+    # tests = set(r["test_name"] for r in data)
+
+    tests = [ "captures::cap_" + t for t in [
+            "a_big_skip",
+            "leading_dotstar",
+            "dotstar_bounce",
+            "leading_estar",
+            "aplus_trailing",
+            "no_opt",
+            ]]
+
     test_data = [[r for r in data if r["test_name"] == t] for t in tests]
     graph_tests(test_data)
     plt.savefig("8000-bar.png")
@@ -38,12 +48,12 @@ def graph_tests(tests):
 
     xstart = 2.0
     for test in tests:
-        x.extend([ xstart + (x * width) for x in range(len(test))])
-        height.extend([height_of(r["time"]) for r in test])
-        errors.extend([error_of(r) for r in test])
-        features.extend([feature_name(r["feature"]) for r in test])
-        cs.extend(colors[0:len(test)])
-        hs.extend(hatches[0:len(test)])
+        x.extend(xstart + (x * width) for x in range(len(test)))
+        height.extend(height_of(r["time"]) for r in test)
+        errors.extend(error_of(r) for r in test)
+        features.extend(feature_name(r["feature"]) for r in test)
+        cs.extend(color_of(r["feature"]) for r in test)
+        hs.extend(hatch_of(r["feature"]) for r in test)
 
         xend = x[len(x) - 1]
 
@@ -104,8 +114,6 @@ def height_of(h):
 def test_name_of(name):
     return bench_names[name[len("captures::cap_"):]]
 
-hatches = ['-', '+', 'x', '\\', '*', 'o', 'O', '.']
-colors = ['b', 'g', 'r', 'c', 'm', 'y', 'k']
 bench_names = {
     "leading_dotstar": "Leading .*",
     "leading_estar": "Leading el Scan",
@@ -122,6 +130,19 @@ def slurp(csv_file):
             data.append(row)
     return data
 
+feature_looks = {
+        "baseline-backtrack": ("-", "blue"),
+        "baseline-pike": ("+", "green"),
+        "skip-backtrack-all": ("x", "red"),
+        "skip-backtrack-ds-es": ("\\", "purple"),
+        "skip-backtrack-ds-sl": ("*", "gold"),
+        "skip-backtrack-es-sl": ("o", "springgreen"),
+        "skip-pike-all": ("O", "lightsalmon"),
+    }
+def hatch_of(feature):
+    return feature_looks[feature_name(feature)][0]
+def color_of(feature):
+    return feature_looks[feature_name(feature)][1]
 def feature_name(feature):
     return feature[len("catpures-"):].replace("ds-es-sl", "all")
 

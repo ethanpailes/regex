@@ -322,7 +322,7 @@ macro_rules! regex {
 // This is the strong point for skip regex. If we don't win here,
 // something is seriously wrong.
 //
-// expectation: major iwn for skipping.
+// expectation: major win for skipping.
 bench_captures!(cap_a_big_skip, 1,
     |scale| 
         regex!(format!(r"{}(bbbb){}",
