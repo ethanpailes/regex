@@ -983,6 +983,11 @@ impl ClassBytes {
     pub fn is_all_ascii(&self) -> bool {
         self.set.intervals().last().map_or(true, |r| r.end <= 0x7F)
     }
+
+    /// Returns true iff the inner set is empty
+    pub fn is_empty(&self) -> bool {
+        self.set.is_empty()
+    }
 }
 
 /// An iterator over all ranges in a byte character class.

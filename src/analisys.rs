@@ -1,8 +1,9 @@
 use syntax::hir::{
-    Hir, HirKind, Literal, ClassUnicodeRange, Interval, IntervalSet,
+    Hir, HirKind, Literal, ClassBytes, ClassBytesRange,
     Class, Visitor
 };
 use syntax::hir;
+use utf8_ranges::Utf8Sequences;
 
 /// True if the given expression is one-pass
 pub fn is_one_pass(expr: &Hir) -> bool {
@@ -23,7 +24,23 @@ pub fn is_one_pass(expr: &Hir) -> bool {
                     if fset_of(&*rep.hir).is_empty() {
                         self.0 = false;
                     }
+
+                    // If a repetition starts with an emptylook,
+                    // the onepass DFA struggles with it because
+                    // it does no know how to check a zero width
+                    // assertion right before a transition.
+                    //
+                    // /(?m)(?:^a)+/ on "aaa\naaa\naaa"
+                    //
+                    // should demonstrate the problem. It does
+                    // not seem impossible to lift this restriction
+                    // on the face of it, but I struggled to come
+                    // up with a clean solution.
+                    if starts_with_emptylook(&*rep.hir) {
+                        self.0 = false;
+                    }
                 }
+                &HirKind::Class(ref cls) => self.check_cls(cls),
                 _ => ()
             }
 
@@ -40,16 +57,20 @@ pub fn is_one_pass(expr: &Hir) -> bool {
             for e in es {
                 let e_rep_inners = IsOnePassVisitor::rep_inners_of(e);
                 if e_rep_inners.len() > 0 {
+                    // There are some inner expressions of a repetition
+                    // to accumulate. e is of the form /e*/ or /e+/ or
+                    // something.
                     rep_inners.extend(e_rep_inners);
                 } else {
+                    // We just reached the end of a list of repetitions.
                     rep_inners.push(e);
-                    self.0 = self.0 && !fsets_intersect(&rep_inners);
+                    self.0 = self.0 && !fsets_clash(&rep_inners);
                     rep_inners.clear();
                 }
             }
 
             if rep_inners.len() > 0 {
-                self.0 = self.0 && !fsets_intersect(&rep_inners);
+                self.0 = self.0 && !fsets_clash(&rep_inners);
             }
         }
 
@@ -61,7 +82,9 @@ pub fn is_one_pass(expr: &Hir) -> bool {
 
                 // If all of the expressions are repetitions, we
                 // need to return the inners, otherwise this concat
-                // will be handed by a different visitor visit.
+                // will be handled by a different visitor visit.
+                //
+                // Technically this is overly conservative.
                 &HirKind::Concat(ref es) =>
                     es.iter()
                         .map(IsOnePassVisitor::rep_inners_of)
@@ -72,11 +95,39 @@ pub fn is_one_pass(expr: &Hir) -> bool {
         }
 
         fn check_alternation(&mut self, es: &[Hir]) {
-            self.0 = self.0 && !fsets_intersect(&es.iter().collect::<Vec<_>>());
+            self.0 = self.0 && !fsets_clash(&es.iter().collect::<Vec<_>>());
+        }
+
+        // Unicode classes are really big alternatives from the byte
+        // oriented point of view.
+        //
+        // This is function translates a unicode class into the 
+        // byte space and checks for intersecting first sets.
+        fn check_cls(&mut self, cls: &Class) {
+            match cls {
+                &Class::Unicode(ref ucls) => {
+                    let mut seen_char: [bool; 256] = [false; 256];
+
+                    for cr in ucls.iter() {
+                        for br in Utf8Sequences::new(cr.start(), cr.end()) {
+                            let first = br.as_slice()[0];
+                            for b in first.start..(first.end+1) {
+                                if seen_char[b as usize] {
+                                    self.0 = false;
+                                    return;
+                                }
+                                seen_char[b as usize] = true;
+                            }
+                        }
+                    }
+                }
+                _ => {} // FALLTHROUGH
+            }
         }
     }
 
-    fn fsets_intersect(es: &[&Hir]) -> bool {
+    // check if a list of first sets is incompatable.
+    fn fsets_clash(es: &[&Hir]) -> bool {
         for (i, e1) in es.iter().enumerate() {
             for (j, e2) in es.iter().enumerate() {
                 if i != j {
@@ -106,37 +157,84 @@ pub fn is_one_pass(expr: &Hir) -> bool {
     hir::visit(expr, IsOnePassVisitor::new()).unwrap()
 }
 
+fn starts_with_emptylook(expr: &Hir) -> bool {
+    match expr.kind() {
+        &HirKind::Anchor(_) | &HirKind::WordBoundary(_) => true,
+        &HirKind::Group(ref e) => starts_with_emptylook(&e.hir),
+        &HirKind::Repetition(ref rep) => starts_with_emptylook(&*rep.hir),
+        &HirKind::Alternation(ref es) =>
+            es.iter().any(|e| starts_with_emptylook(e)),
+        &HirKind::Concat(ref es) => {
+            for e in es {
+                match e.kind() {
+                    &HirKind::Anchor(_) | &HirKind::WordBoundary(_) =>
+                        return true,
+                    &HirKind::Repetition(ref rep) => {
+                        if starts_with_emptylook(&*rep.hir) {
+                            return true;
+                        }
+                    }
+                    // This is the (n+1)th expression
+                    _ => {
+                        return starts_with_emptylook(&e);
+                    }
+                }
+            }
+
+            return false;
+        }
+        _ => return false,
+    }
+}
+
 /// Compute the first set of a given regular expression.
 ///
 /// The first set of a regular expression is the set of all characters
 /// which might begin it. This is a less general version of the
 /// notion of a regular expression preview (the first set can be
 /// thought of as the 1-preview of a regular expression).
-fn fset_of(expr: &Hir) -> IntervalSet<ClassUnicodeRange> {
-    fn singleton(c: char) -> IntervalSet<ClassUnicodeRange> {
-        IntervalSet::singleton(ClassUnicodeRange::create(c, c))
+///
+/// Note that first sets are byte-oriented because the DFA is
+/// byte oriented. This means an expression like /Δ|δ/ is actually not
+/// one-pass, even though there is clearly no non-determinism inherent
+/// to the regex at a unicode code point level (big delta and little
+/// delta start with the same byte).
+fn fset_of(expr: &Hir) -> ClassBytes {
+    fn singleton(b: u8) -> ClassBytes {
+        let mut c = ClassBytes::empty();
+        c.push(ClassBytesRange::new(b, b));
+        c
     }
 
-    fn anychar() -> IntervalSet<ClassUnicodeRange> {
-        IntervalSet::singleton(ClassUnicodeRange::new('\0', '\u{10FFFF}'))
+    fn anychar() -> ClassBytes {
+        let mut c = ClassBytes::empty();
+        c.push(ClassBytesRange::new(b'\0', b'\xFF'));
+        c
     }
 
     match expr.kind() {
-        &HirKind::Empty => IntervalSet::new(vec![]),
+        &HirKind::Empty => ClassBytes::empty(),
         &HirKind::Literal(ref lit) => {
             match lit {
-                &Literal::Unicode(c) => singleton(c),
-                &Literal::Byte(b) => singleton(b as char),
+                &Literal::Unicode(c) => singleton(first_byte(c)),
+                &Literal::Byte(b) => singleton(b),
             }
         }
         &HirKind::Class(ref class) => {
             match class {
-                &Class::Unicode(ref c) => IntervalSet::new(c.iter().map(|x| *x)),
-                &Class::Bytes(ref b) =>
-                    IntervalSet::new(
-                        b.iter().map(|br|
-                            ClassUnicodeRange::create(
-                                br.lower() as char, br.upper() as char))),
+                &Class::Unicode(ref c) => {
+                    // Get all the bytes which might begin this unicode
+                    // class.
+                    let mut cb = ClassBytes::empty();
+                    for cr in c.iter() {
+                        for br in Utf8Sequences::new(cr.start(), cr.end()) {
+                            let first = br.as_slice()[0];
+                            cb.push(ClassBytesRange::new(first.start, first.end));
+                        }
+                    }
+                    cb
+                }
+                &Class::Bytes(ref b) => ClassBytes::new(b.iter().map(|x| *x)),
             }
         }
 
@@ -155,7 +253,7 @@ fn fset_of(expr: &Hir) -> IntervalSet<ClassUnicodeRange> {
         // as well as take the union of the first sets of the first n+1
         // expressions where n is the number of leading repetitions.
         &HirKind::Concat(ref es) => {
-            let mut fset = IntervalSet::new(vec![]);
+            let mut fset = ClassBytes::empty();
             for e in es {
                 match e.kind() {
                     &HirKind::Anchor(_) | &HirKind::WordBoundary(_) => (),
@@ -172,13 +270,19 @@ fn fset_of(expr: &Hir) -> IntervalSet<ClassUnicodeRange> {
             fset
         }
         &HirKind::Alternation(ref es) => {
-            let mut fset = IntervalSet::new(vec![]);
+            let mut fset = ClassBytes::empty();
             for e in es {
                 fset.union(&fset_of(e));
             }
             fset
         }
     }
+}
+
+fn first_byte(c: char) -> u8 {
+    let mut b: [u8; 4] = [0; 4];
+    c.encode_utf8(&mut b);
+    b[0]
 }
 
 #[cfg(test)]
@@ -194,7 +298,7 @@ mod tests {
     }
 
     //
-    // First set intersection tests
+    // First set intersection smoke tests
     //
 
     #[test]

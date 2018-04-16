@@ -7,7 +7,7 @@ mat!(uni_mixed, r"\pN+", "Ⅰ1Ⅱ2", Some((0, 8)));
 mat!(uni_not, r"\PN+", "abⅠ", Some((0, 2)));
 mat!(uni_not_class, r"[\PN]+", "abⅠ", Some((0, 2)));
 mat!(uni_not_class_neg, r"[^\PN]+", "abⅠ", Some((2, 5)));
-mat!(uni_case, r"(?i)Δ", "δ", Some((0, 2)));
+mat!(uni_case__, r"(?i)Δ", "δ", Some((0, 2)));
 mat!(uni_case_upper, r"\p{Lu}+", "ΛΘΓΔα", Some((0, 8)));
 mat!(uni_case_upper_nocase_flag, r"(?i)\p{Lu}+", "ΛΘΓΔα", Some((0, 10)));
 mat!(uni_case_upper_nocase, r"\p{L}+", "ΛΘΓΔα", Some((0, 10)));

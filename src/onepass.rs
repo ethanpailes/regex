@@ -224,6 +224,7 @@ impl OnePass {
                 // No need to mask because there are no flags.
                 state_ptr = self.follow(state_ptr as usize, byte_class);
             } else if state_ptr == STATE_DEAD {
+                trace!("::exec_ loop-dead");
                 return false;
             } else if state_ptr & STATE_ACTION != 0 {
                 let byte_class = self.byte_class(text, at);
@@ -255,6 +256,7 @@ impl OnePass {
                 // No need to mask because no flags are set.
                 state_ptr = self.follow(state_ptr as usize, byte_class);
             } else if state_ptr == STATE_DEAD {
+                trace!("::exec_ drain-dead");
                 return false;
             } else if state_ptr & STATE_ACTION != 0 {
                 let byte_class = self.byte_class(text, at);
@@ -286,9 +288,9 @@ impl OnePass {
             state_ptr = self.table[state_ptr as usize + byte_class];
         }
 
-        // Finally, drain any non-input consuming states
+        // Finally, drain any actions
         while state_ptr & STATE_ACTION != 0 {
-            trace!("::exec eof save");
+            trace!("::exec eof act");
             state_ptr = self.act(input, at, slots, state_ptr, byte_class);
         }
 
@@ -593,6 +595,10 @@ impl<'r> OnePassCompiler<'r> {
     pub fn new(prog: &'r Program) -> Result<Self, OnePassError> {
         if ! prog.is_one_pass {
             return Err(OnePassError::HasNondeterminism);
+        }
+
+        if prog.is_regexset() {
+            return Err(OnePassError::RegexSetUnsupported);
         }
 
         trace!("new compiler for:\n{:?}", prog);

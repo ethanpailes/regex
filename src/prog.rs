@@ -161,6 +161,11 @@ impl Program {
         + (self.byte_classes.len() * mem::size_of::<u8>())
         + self.prefixes.approximate_size()
     }
+
+    /// Returns true if this is a program for a regexset.
+    pub fn is_regexset(&self) -> bool {
+        self.matches.len() > 1
+    }
 }
 
 impl Deref for Program {
