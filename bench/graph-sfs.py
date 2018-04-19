@@ -41,20 +41,8 @@ def graph_test(test):
 
     data = slurp(test + ".csv")
     features = list(set(row["feature"] for row in data))
-    def max_of(f):
-        rows = [r for r in data if r["feature"] == f]
-        running_time = [int(r["time"].replace(",", "")) for r in rows]
-        return running_time[len(running_time) - 1]
     def feature_cmp(lhs, rhs):
-        lhs_max = max_of(lhs)
-        rhs_max = max_of(rhs)
-
-        if lhs_max < rhs_max:
-            return -1
-        elif lhs_max > rhs_max:
-            return 1
-        else:
-            return 0
+        return rank_of(rhs) - rank_of(lhs)
     features.sort(key=functools.cmp_to_key(feature_cmp))
 
     xmin = sys.maxsize
@@ -87,7 +75,6 @@ def graph_test(test):
 
     plt.xlabel("Scaling Factor")
     plt.ylabel("Running Time in ns")
-    # plt.title(test_name(test))
     plt.ylim((percent_shift(ymin, ymax - ymin, -10.0),
               percent_shift(ymax, ymax - ymin, 10.0)))
     plt.xlim((percent_shift(xmin, xmax - xmin, -10.0),
@@ -95,19 +82,21 @@ def graph_test(test):
     plt.legend()
 
 feature_looks = {
-        "baseline-backtrack": ("o", "blue"),
-        "baseline-pike": ("s", "green"),
-        "skip-backtrack-all": ("v", "red"),
-        "skip-backtrack-ds-es": ("^", "purple"),
-        "skip-backtrack-ds-sl": (">", "gold"),
-        "skip-backtrack-es-sl": ("<", "springgreen"),
-        "skip-pike-all": ("8", "lightsalmon"),
+        "baseline-pike": ("s", "green", 0),
+        "baseline-backtrack": ("o", "blue", 1),
+        "skip-backtrack-ds-es": ("^", "purple", 2),
+        "skip-backtrack-ds-sl": (">", "gold", 3),
+        "skip-backtrack-es-sl": ("<", "springgreen", 4),
+        "skip-pike-all": ("8", "lightsalmon", 5),
+        "skip-backtrack-all": ("v", "red", 6),
     }
 
 def marker_of(feature):
     return feature_looks[feature_name(feature)][0]
 def color_of(feature):
     return feature_looks[feature_name(feature)][1]
+def rank_of(feature):
+    return feature_looks[feature_name(feature)][2]
 
 def percent_shift(n, span, p):
     """ Shift down by -p% of p if p is negative, else shift up by p% of span
