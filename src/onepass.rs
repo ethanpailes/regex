@@ -155,7 +155,9 @@ impl OnePass {
         let input = ByteInput::new(text, false);
 
         let mut state_ptr = self.start_state;
+        let mut last_state = state_ptr;
 
+        /*
         //
         // The inner loop of the onepass DFA.
         //
@@ -246,6 +248,9 @@ impl OnePass {
         if state_ptr & STATE_SPECIAL == 0 {
             at += 1;
         }
+
+        */
+
         while at < text.len() {
             let byte_class = self.byte_class(text, at);
 
@@ -254,17 +259,19 @@ impl OnePass {
                         st_str(state_ptr), at, byte_class, text[at]);
 
                 // No need to mask because no flags are set.
+                last_state = state_ptr;
                 state_ptr = self.follow(state_ptr as usize, byte_class);
             } else if state_ptr == STATE_DEAD {
                 trace!("::exec_ drain-dead");
-                return false;
+                if !self.is_anchored_end {
+                    return last_state & STATE_MATCH == 0;
+                }
             } else if state_ptr & STATE_ACTION != 0 {
                 let byte_class = self.byte_class(text, at);
                 trace!("::exec_ drain-act st={} at={} bc={} byte={}",
                         st_str(state_ptr), at, byte_class, text[at]);
+                // last_state = state_ptr;
                 state_ptr = self.act(input, at, slots, state_ptr, byte_class);
-            } else if state_ptr == STATE_MATCH {
-                return !self.is_anchored_end;
             } else {
                 unreachable!();
             }
@@ -281,6 +288,7 @@ impl OnePass {
         // Execute one last step in the magic EOF byte class
         //
 
+        /*
         // Set the byte class to be EOF
         let byte_class = self.num_byte_classes - 1;
         trace!("::exec eof st={} at={} bc={}", st_str(state_ptr), at, byte_class);
@@ -293,9 +301,10 @@ impl OnePass {
             trace!("::exec eof act");
             state_ptr = self.act(input, at, slots, state_ptr, byte_class);
         }
+        */
 
         // All of that was only valid if we end up in a matching state.
-        state_ptr == STATE_MATCH
+        state_ptr & STATE_MATCH != 0
     }
 
     #[inline]
@@ -310,8 +319,6 @@ impl OnePass {
         // We had better have been called with a state that actually
         // needs to be acted on.
         debug_assert!(state_ptr & STATE_ACTION != 0);
-        // No state should have both flags set.
-        debug_assert!(state_ptr & STATE_MATCH == 0);
 
         let state_idx = (state_ptr & STATE_MAX) as usize;
         let action_type = self.table[state_idx + self.num_byte_classes];
@@ -383,6 +390,13 @@ pub struct OnePassCompiler<'r> {
     /// A mapping from instruction indicies to their transitions
     transitions: Vec<Option<TransitionTable>>,
 
+    /// A mapping from instruction indicies to flags indicating
+    /// if they should have the STATE_MATCH flag set.
+    accepting_states: Vec<bool>,
+
+    /// A DAG of forwarding relationship indicating when
+    /// a state needs to be forwarded to an Action state
+    /// once that Action state has been fully constructed.
     forwards: Forwards,
 }
 
@@ -628,6 +642,7 @@ impl<'r> OnePassCompiler<'r> {
                 }
                 x
             },
+            accepting_states: vec![false; prog.len()],
             forwards: Forwards::new(),
         })
     }
@@ -704,7 +719,11 @@ impl<'r> OnePassCompiler<'r> {
                     resume.push(inst.goto2);
                 }
                 &Inst::Match(_) => {
+                    self.accepting_states[inst_idx] = true;
                     for t in trans.0.iter_mut() {
+                        // Note that we go from lowest to highest
+                        // priority, so we don't have to worry about
+                        // clobbering higher priority transitions here.
                         *t = Transition {
                             tgt: TransitionTarget::Match,
                             priority: priority
@@ -796,6 +815,14 @@ impl<'r> OnePassCompiler<'r> {
             }
         }
 
+        let ptr_of = |c: &OnePassCompiler, i: usize| {
+            let mut p = state_starts[i] as StatePtr;
+            if c.accepting_states[i] {
+                p |= STATE_MATCH;
+            }
+            p
+        };
+
         for inst_idx in 0..self.prog.len() {
             let mut trans = Vec::with_capacity(
                 state_starts[state_starts.len() - 1]
@@ -806,12 +833,13 @@ impl<'r> OnePassCompiler<'r> {
                 &Some(ref ttab) => {
                     for t in ttab.0.iter() {
                         trans.push(match t.tgt {
-                            TransitionTarget::Match => STATE_MATCH,
+                            // TODO: delete TransitionTarget::Match
+                            TransitionTarget::Match => STATE_DEAD,
+
                             TransitionTarget::Die => STATE_DEAD,
-                            TransitionTarget::BytesInst(i) =>
-                                state_starts[i] as StatePtr,
+                            TransitionTarget::BytesInst(i) => ptr_of(self, i),
                             TransitionTarget::ActionInst(i) =>
-                                (state_starts[i] as StatePtr) | STATE_ACTION,
+                                ptr_of(self, i) | STATE_ACTION,
                         });
                     }
                 }
@@ -819,7 +847,8 @@ impl<'r> OnePassCompiler<'r> {
 
             self.onepass.table.extend(trans);
 
-            // emit all the right window dressing for the action
+            // emit all the right window dressing for the action, if
+            // there is one.
             match &self.prog[inst_idx] {
                 &Inst::Save(ref inst) => {
                     debug_assert!(self.onepass.num_byte_classes >= 2);
@@ -888,10 +917,12 @@ fn st_str(st: StatePtr) -> String {
     } else {
         if st == STATE_POISON {
             "P".to_string()
+        } else if st & STATE_ACTION != 0 && st & STATE_MATCH != 0 {
+            format!("(M{:x})", st & STATE_MAX)
         } else if st & STATE_ACTION != 0 {
             format!("({:x})", st & STATE_MAX)
         } else if st & STATE_MATCH != 0 {
-            "M".to_string()
+            format!("M{:x}", st & STATE_MAX)
         } else {
             format!("{:x}", st & STATE_MAX)
         }

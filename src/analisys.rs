@@ -17,6 +17,10 @@ pub fn is_one_pass(expr: &Hir) -> bool {
         }
 
         fn visit_pre(&mut self, hir: &Hir) -> Result<(), ()> {
+            if !self.0 {
+                return Ok(())
+            }
+
             match hir.kind() {
                 &HirKind::Concat(ref es) => self.check_concat(&es),
                 &HirKind::Alternation(ref es) => self.check_alternation(&es),
@@ -25,6 +29,7 @@ pub fn is_one_pass(expr: &Hir) -> bool {
                         self.0 = false;
                     }
 
+                    /* TODO: delete
                     // If a repetition starts with an emptylook,
                     // the onepass DFA struggles with it because
                     // it does no know how to check a zero width
@@ -39,6 +44,7 @@ pub fn is_one_pass(expr: &Hir) -> bool {
                     if starts_with_emptylook(&*rep.hir) {
                         self.0 = false;
                     }
+                    */
                 }
                 &HirKind::Class(ref cls) => self.check_cls(cls),
                 _ => ()
@@ -157,6 +163,7 @@ pub fn is_one_pass(expr: &Hir) -> bool {
     hir::visit(expr, IsOnePassVisitor::new()).unwrap()
 }
 
+/* TODO: delete
 fn starts_with_emptylook(expr: &Hir) -> bool {
     match expr.kind() {
         &HirKind::Anchor(_) | &HirKind::WordBoundary(_) => true,
@@ -186,6 +193,7 @@ fn starts_with_emptylook(expr: &Hir) -> bool {
         _ => return false,
     }
 }
+*/
 
 /// Compute the first set of a given regular expression.
 ///
@@ -419,13 +427,13 @@ mod tests {
         assert!(is_one_pass(&e1));
         assert!(! is_one_pass(&e2));
     }
-
-    #[test]
-    fn is_one_pass_smoke_test2() {
-        let e1 = Parser::new().parse(r"(\d+)-(\d+)").unwrap();
-        let e2 = Parser::new().parse(r"(\d+).(\d+)").unwrap();
-
-        assert!(is_one_pass(&e1));
-        assert!(! is_one_pass(&e2));
-    }
+    
+    //
+    // Note that Russ Cox's other example of a onepass regex
+    // (r"(\d+)-(\d+)") is actually not onepass for us because
+    // there is byte-level nondeterminism in the \d charicter
+    // class, and we care about things in the byte space rather
+    // than the charicter space. If you do a onepass engine at
+    // the charicter level this should not be an issue.
+    //
 }
