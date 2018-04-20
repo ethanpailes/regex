@@ -1126,7 +1126,9 @@ impl<'c> ExecNoSync<'c> {
                     }
                 }
             }
-            OnePass => unreachable!("@burntsushi what do?"),
+            // lol, we don't support regexsets
+            OnePass => self.exec_nfa(
+                MatchNfaType::Auto, matches, &mut [], false, text, start),
             Nfa(ty) => self.exec_nfa(ty, matches, &mut [], false, text, start),
             Nothing => false,
         }
@@ -1224,7 +1226,7 @@ impl Clone for Exec {
 impl ExecReadOnly {
     fn choose_match_type(&self, mut hint: Option<MatchType>) -> MatchType {
         use self::MatchType::*;
-        // Try to use the onepass DFA if we have been asked to
+        // Try to use the onepass DFA if we have been asked to.
         if let Some(MatchType::OnePass) = hint {
             if self.onepass.is_some() {
                 return MatchType::OnePass;

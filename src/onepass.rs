@@ -96,7 +96,7 @@ impl OnePass {
             // repeatedly tests to see if the very first DFA
             // state could make progress.
             loop {
-                trace!("Trying to match at={} text.len()={}",
+                trace!("OnePass::exec trying to match at={} text.len()={}",
                         at, text.len());
                 if self.exec_(text, at, slots) {
                     return true;
@@ -118,8 +118,8 @@ impl OnePass {
     /// position where a match will actually make one character
     /// of progress.
     fn exec_prefix(&self, text: &[u8], mut at: usize) -> usize {
-        trace!("::exec_prefix at={}", at);
-        if !self.prefixes.is_empty() {
+        trace!("::exec_prefix at={} text.len()={}", at, text.len());
+        if at < text.len() && !self.prefixes.is_empty() {
             at = at + self.prefixes
                 .find(&text[at..])
                 .map(|(s, _)| s)
@@ -164,6 +164,7 @@ impl OnePass {
         // 
         // while at < text.len():
         //    state_ptr = self.transitions[state_ptr + text[at]]
+        //    at += 1
         //
         // As usual, this is a horrible lie. The onepass DFA steals
         // the byteclass compression trick from the lazy DFA, so there
@@ -191,10 +192,10 @@ impl OnePass {
                 // START: (0)
                 //
                 // 0: 0/D | 1/8 | 2/D | 3/D
-                // 4: 0/0 | 1/0 | 2/0 | 3/0
+                // 4: 0/0 | 1/0 | 2/P | 3/P
                 // 8: 0/(c) | 1/(c) | 2/(c) | 3/(c)
                 // c: 0/M | 1/M | 2/M | 3/M
-                // 10: 0/1 | 1/1 | 2/1 | 3/1
+                // 10: 0/0 | 1/1 | 2/P | 3/P
                 // ```
                 //
                 // Our initial state is denoted (0) because it's transition

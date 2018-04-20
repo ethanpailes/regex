@@ -69,6 +69,9 @@ pub fn is_one_pass(expr: &Hir) -> bool {
                 }
             }
 
+            // TODO: test to make sure we do the right thing for
+            //       cases like (a|)a (not onepass)
+
             if rep_inners.len() > 0 {
                 self.0 = self.0 && !fsets_clash(&rep_inners);
             }
@@ -420,12 +423,12 @@ mod tests {
         assert!(! is_one_pass(&e2));
     }
 
-    #[test]
-    fn is_one_pass_smoke_test2() {
-        let e1 = Parser::new().parse(r"(\d+)-(\d+)").unwrap();
-        let e2 = Parser::new().parse(r"(\d+).(\d+)").unwrap();
-
-        assert!(is_one_pass(&e1));
-        assert!(! is_one_pass(&e2));
-    }
+    //
+    // Note that Russ Cox's other example of a onepass regex
+    // (r"(\d+)-(\d+)") is actually not onepass for us because
+    // there is byte-level nondeterminism in the \d charicter
+    // class, and we care about things in the byte space rather
+    // than the charicter space. If you do a onepass engine at
+    // the charicter level this should not be an issue.
+    //
 }
