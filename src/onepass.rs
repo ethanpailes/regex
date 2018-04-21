@@ -78,9 +78,6 @@ impl OnePass {
 
     /// Execute the one-pass DFA, populating the list of capture slots
     /// as you go.
-    ///
-    /// TODO(ethan): ask @burntsushi about doing the right thing WRT regexsets
-    ///       here.
     pub fn exec(&self, slots: &mut [Slot], text: &[u8], mut at: usize) -> bool {
         trace!("execing on '{:?}'\n{}", text, self);
 
@@ -177,6 +174,13 @@ impl OnePass {
         // actual text.len() to check when it is time to break out of
         // the loop to facilitate loop unrolling, and to avoid an
         // extra branch around when it is time to increment at.
+        //
+        // Note that the only difference between this loop and
+        // the drain loop below is where `at` gets incremented
+        // and loop unrolling. For bugs that are not related to
+        // either of those things, it is often easier to just comment
+        // this loop out and work on the drain loop. Once you've come
+        // up with the fix, you can transfer your work here.
         let step_size = 1;
         let backstop = text.len().checked_sub(step_size).unwrap_or(0);
         while at < backstop {
@@ -263,28 +267,36 @@ impl OnePass {
                 // No need to mask because no flags are set.
                 state_ptr = self.follow(state_ptr as usize, byte_class);
             } else {
+                if state_ptr == STATE_HALT {
+                    break;
+                }
+
                 if state_ptr == STATE_DEAD {
                     trace!("::exec_ drain-dead");
                     slots[FULL_MATCH_CAPTURE_END] = last_match;
                     return last_match.is_some();
                 }
 
-                if state_ptr & STATE_MATCH != 0 {
-                    trace!("::exec_ drain-match at={}", at);
-                    last_match = Some(at);
-                }
-
                 if state_ptr & STATE_ACTION != 0 {
                     // NOTE: recompute the byteclass here in main loop
                     trace!("::exec_ drain-act st={} at={} bc={} byte={}",
                             st_str(state_ptr), at, byte_class, text[at]);
+                    let match_state = state_ptr & STATE_MATCH != 0;
                     state_ptr =
                         self.act(input, at, slots, state_ptr, byte_class);
+                    // only record a match if the action does not cause death
+                    if state_ptr != STATE_DEAD && match_state {
+                        trace!("::exec_ drain-act-match at={}", at);
+                        last_match = Some(at);
+                    }
                 } else {
-                    trace!("::exec_ drain-spec-byte st={} at={} bc={} byte={}",
+                    debug_assert!(state_ptr & STATE_MATCH != 0);
+                    trace!("::exec_ drain-match st={} at={} bc={} byte={}",
                             st_str(state_ptr), at, byte_class, text[at]);
+                    last_match = Some(at);
                     state_ptr = self.follow(
                         (state_ptr & STATE_MAX) as usize, byte_class);
+
                 }
             }
 
@@ -306,32 +318,35 @@ impl OnePass {
                 st_str(state_ptr), at, byte_class);
 
         // One EOF step
-        if state_ptr & STATE_MATCH != 0 {
-            trace!("::exec_ eof-match at={}", at);
-            last_match = Some(at);
-        }
         if state_ptr & STATE_ACTION == 0 {
+            /* TODO(ethan): why is this wrong????
+            if state_ptr & STATE_MATCH != 0 {
+                trace!("::exec_ eof-match at={}", at);
+                last_match = Some(at);
+            }
+            */
             state_ptr = self.table[
                 (state_ptr & STATE_MAX) as usize + byte_class];
         }
 
         // Finally, drain any actions.
-        while state_ptr & STATE_ACTION != 0 {
+        while state_ptr & STATE_ACTION != 0 && state_ptr != STATE_HALT {
             trace!("::exec eof act st={}", st_str(state_ptr));
-            if state_ptr & STATE_MATCH != 0 {
+            let match_state = state_ptr & STATE_MATCH != 0;
+            state_ptr = self.act(input, at, slots, state_ptr, byte_class);
+            // only record a match if the action does not cause death
+            if state_ptr != STATE_DEAD && match_state {
                 trace!("::exec_ eof-act-match at={}", at);
                 last_match = Some(at);
             }
-
-            state_ptr = self.act(input, at, slots, state_ptr, byte_class);
         }
 
         //
         // Finally, we can figure out if we actually got a match.
         //
 
-        trace!("::exec_ determine-match st={} at={} last_match={:?}",
-                st_str(state_ptr), at, last_match);
+        trace!("::exec_ determine-match st={} at={} last_match={:?} slots={:?}",
+                st_str(state_ptr), at, last_match, slots);
         slots[FULL_MATCH_CAPTURE_END] = last_match;
         return last_match.is_some();
     }
@@ -821,12 +836,12 @@ impl<'r> OnePassCompiler<'r> {
             
             // Finally, if a match instruction is reachable through
             // a save fwd, the from state is accepting.
-            match &self.prog[fwd.to] {
-                &Inst::Save(_) => {
+            match (&self.prog[fwd.to], &self.prog[fwd.from]) {
+                (&Inst::Save(_), _) => {
                     self.accepting_states[fwd.from] =
                         self.accepting_states[fwd.to];
                 }
-                _ => {} // FALLTHROUGH
+                _ => {}
             }
         }
 
@@ -872,8 +887,7 @@ impl<'r> OnePassCompiler<'r> {
                 &Some(ref ttab) => {
                     for t in ttab.0.iter() {
                         trans.push(match t.tgt {
-                            // TODO: delete TransitionTarget::Match
-                            TransitionTarget::Match => STATE_DEAD,
+                            TransitionTarget::Match => STATE_HALT,
 
                             TransitionTarget::Die => STATE_DEAD,
                             TransitionTarget::BytesInst(i) => ptr_of(self, i),
@@ -956,6 +970,8 @@ fn st_str(st: StatePtr) -> String {
     } else {
         if st == STATE_POISON {
             "P".to_string()
+        } else if st == STATE_HALT {
+            "H".to_string()
         } else if st & STATE_ACTION != 0 && st & STATE_MATCH != 0 {
             format!("(M{:x})", st & STATE_MAX)
         } else if st & STATE_ACTION != 0 {
@@ -990,9 +1006,6 @@ enum Action {
 }
 
 /// A match state means that the regex has successfully matched.
-///
-/// It is not valid to dereference STATE_MATCH. We use a header
-/// bitflag anyway to facilitate special case checking.
 const STATE_MATCH: StatePtr = 1 << 30;
 
 /// POISON is a state pointer that should never be touched.
@@ -1004,6 +1017,12 @@ const STATE_POISON: StatePtr = !0;
 ///
 /// It is not valid to dereference STATE_DEAD.
 const STATE_DEAD: StatePtr = STATE_MATCH + 1;
+
+/// HALT indicates that the machine ought to halt execution. It differs
+/// from DEAD only in that an accepting state that transitions to HALT
+/// still accepts, while an accepting state which transitions to DEAD
+/// does not.
+const STATE_HALT: StatePtr = STATE_MATCH + 2;
 
 /// The maximum state pointer. This is useful to mask out the "valid" state
 /// pointer from a state with the "start" or "match" bits set.
