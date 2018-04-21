@@ -21,7 +21,7 @@ mat!(match_basic_5, r"XXXXXX", r"..XXXXXX", Some((2, 8)));
 mat!(match_basic_6, r"\)", r"()", Some((1, 2)));
 mat!(match_basic_7, r"a]", r"a]a", Some((0, 2)));
 mat!(match_basic_9, r"\}", r"}", Some((0, 1)));
-mat!(match_basic_10, r"\]", r"]", Some((0, 1)));
+mat!(match_basic_10_, r"\]", r"]", Some((0, 1)));
 mat!(match_basic_12, r"]", r"]", Some((0, 1)));
 mat!(match_basic_15, r"^a", r"ax", Some((0, 1)));
 mat!(match_basic_16, r"\^a", r"a^a", Some((1, 3)));

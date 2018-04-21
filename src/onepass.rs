@@ -119,7 +119,7 @@ impl OnePass {
     /// of progress.
     fn exec_prefix(&self, text: &[u8], mut at: usize) -> usize {
         trace!("::exec_prefix at={}", at);
-        if !self.prefixes.is_empty() {
+        if at < text.len() && !self.prefixes.is_empty() {
             at = at + self.prefixes
                 .find(&text[at..])
                 .map(|(s, _)| s)
@@ -167,6 +167,7 @@ impl OnePass {
         // 
         // while at < text.len():
         //    state_ptr = self.transitions[state_ptr + text[at]]
+        //    at += 1
         //
         // As usual, this is a horrible lie. The onepass DFA steals
         // the byteclass compression trick from the lazy DFA, so there
@@ -194,10 +195,10 @@ impl OnePass {
                 // START: (0)
                 //
                 // 0: 0/D | 1/8 | 2/D | 3/D
-                // 4: 0/0 | 1/0 | 2/0 | 3/0
+                // 4: 0/0 | 1/0 | 2/P | 3/P
                 // 8: 0/(c) | 1/(c) | 2/(c) | 3/(c)
                 // c: 0/M | 1/M | 2/M | 3/M
-                // 10: 0/1 | 1/1 | 2/1 | 3/1
+                // 10: 0/1 | 1/1 | 2/P | 3/P
                 // ```
                 //
                 // Our initial state is denoted (0) because it's transition
@@ -274,18 +275,23 @@ impl OnePass {
                 }
 
                 if state_ptr & STATE_ACTION != 0 {
-                    let byte_class = self.byte_class(text, at);
+                    // NOTE: recompute the byteclass here in main loop
                     trace!("::exec_ drain-act st={} at={} bc={} byte={}",
                             st_str(state_ptr), at, byte_class, text[at]);
                     state_ptr =
                         self.act(input, at, slots, state_ptr, byte_class);
+                } else {
+                    trace!("::exec_ drain-spec-byte st={} at={} bc={} byte={}",
+                            st_str(state_ptr), at, byte_class, text[at]);
+                    state_ptr = self.follow(
+                        (state_ptr & STATE_MAX) as usize, byte_class);
                 }
             }
 
             // We incur the cost of this extra branch in the drain
             // loop because we need to make sure that we won't fly
             // off the end of the string.
-            if state_ptr & STATE_SPECIAL == 0 {
+            if state_ptr & STATE_ACTION == 0 {
                 at += 1;
             }
         }
@@ -296,18 +302,24 @@ impl OnePass {
 
         // Set the byte class to be EOF
         let byte_class = self.num_byte_classes - 1;
-        trace!("::exec eof st={} at={} bc={}", st_str(state_ptr), at, byte_class);
+        trace!("::exec eof st={} at={} bc={}",
+                st_str(state_ptr), at, byte_class);
 
         // One EOF step
-        if state_ptr & STATE_SPECIAL == 0 {
-            state_ptr = self.table[state_ptr as usize + byte_class];
+        if state_ptr & STATE_MATCH != 0 {
+            trace!("::exec_ eof-match at={}", at);
+            last_match = Some(at);
+        }
+        if state_ptr & STATE_ACTION == 0 {
+            state_ptr = self.table[
+                (state_ptr & STATE_MAX) as usize + byte_class];
         }
 
         // Finally, drain any actions.
         while state_ptr & STATE_ACTION != 0 {
-            trace!("::exec eof act");
+            trace!("::exec eof act st={}", st_str(state_ptr));
             if state_ptr & STATE_MATCH != 0 {
-                trace!("::exec_ eof-match at={}", at);
+                trace!("::exec_ eof-act-match at={}", at);
                 last_match = Some(at);
             }
 
@@ -805,6 +817,16 @@ impl<'r> OnePassCompiler<'r> {
                     tgt: tgt.clone(),
                     priority: fwd.priority,
                 };
+            }
+            
+            // Finally, if a match instruction is reachable through
+            // a save fwd, the from state is accepting.
+            match &self.prog[fwd.to] {
+                &Inst::Save(_) => {
+                    self.accepting_states[fwd.from] =
+                        self.accepting_states[fwd.to];
+                }
+                _ => {} // FALLTHROUGH
             }
         }
 

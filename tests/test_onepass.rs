@@ -58,3 +58,4 @@ mod suffix_reverse;
 mod unicode;
 mod word_boundary;
 mod word_boundary_unicode;
+mod onepass_unit;
