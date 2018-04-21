@@ -155,9 +155,10 @@ impl OnePass {
         let input = ByteInput::new(text, false);
 
         let mut state_ptr = self.start_state;
-        let mut last_state = state_ptr;
+        let mut last_match: Slot = None;
 
         /*
+        // TODO: re-write this to match the drain loop.
         //
         // The inner loop of the onepass DFA.
         //
@@ -259,21 +260,26 @@ impl OnePass {
                         st_str(state_ptr), at, byte_class, text[at]);
 
                 // No need to mask because no flags are set.
-                last_state = state_ptr;
                 state_ptr = self.follow(state_ptr as usize, byte_class);
-            } else if state_ptr == STATE_DEAD {
-                trace!("::exec_ drain-dead");
-                if !self.is_anchored_end {
-                    return last_state & STATE_MATCH == 0;
-                }
-            } else if state_ptr & STATE_ACTION != 0 {
-                let byte_class = self.byte_class(text, at);
-                trace!("::exec_ drain-act st={} at={} bc={} byte={}",
-                        st_str(state_ptr), at, byte_class, text[at]);
-                // last_state = state_ptr;
-                state_ptr = self.act(input, at, slots, state_ptr, byte_class);
             } else {
-                unreachable!();
+                if state_ptr == STATE_DEAD {
+                    trace!("::exec_ drain-dead");
+                    slots[FULL_MATCH_CAPTURE_END] = last_match;
+                    return last_match.is_some();
+                }
+
+                if state_ptr & STATE_MATCH != 0 {
+                    trace!("::exec_ drain-match at={}", at);
+                    last_match = Some(at);
+                }
+
+                if state_ptr & STATE_ACTION != 0 {
+                    let byte_class = self.byte_class(text, at);
+                    trace!("::exec_ drain-act st={} at={} bc={} byte={}",
+                            st_str(state_ptr), at, byte_class, text[at]);
+                    state_ptr =
+                        self.act(input, at, slots, state_ptr, byte_class);
+                }
             }
 
             // We incur the cost of this extra branch in the drain
@@ -288,23 +294,34 @@ impl OnePass {
         // Execute one last step in the magic EOF byte class
         //
 
-        /*
         // Set the byte class to be EOF
         let byte_class = self.num_byte_classes - 1;
         trace!("::exec eof st={} at={} bc={}", st_str(state_ptr), at, byte_class);
+
+        // One EOF step
         if state_ptr & STATE_SPECIAL == 0 {
             state_ptr = self.table[state_ptr as usize + byte_class];
         }
 
-        // Finally, drain any actions
+        // Finally, drain any actions.
         while state_ptr & STATE_ACTION != 0 {
             trace!("::exec eof act");
+            if state_ptr & STATE_MATCH != 0 {
+                trace!("::exec_ eof-match at={}", at);
+                last_match = Some(at);
+            }
+
             state_ptr = self.act(input, at, slots, state_ptr, byte_class);
         }
-        */
 
-        // All of that was only valid if we end up in a matching state.
-        state_ptr & STATE_MATCH != 0
+        //
+        // Finally, we can figure out if we actually got a match.
+        //
+
+        trace!("::exec_ determine-match st={} at={} last_match={:?}",
+                st_str(state_ptr), at, last_match);
+        slots[FULL_MATCH_CAPTURE_END] = last_match;
+        return last_match.is_some();
     }
 
     #[inline]
@@ -978,3 +995,5 @@ const STATE_MAX: StatePtr = STATE_MATCH - 1;
 /// with a special case, or if we can keep chugging away at the inner
 /// loop.
 const STATE_SPECIAL: StatePtr = STATE_MATCH | STATE_ACTION;
+
+const FULL_MATCH_CAPTURE_END: usize = 1;

@@ -1126,7 +1126,8 @@ impl<'c> ExecNoSync<'c> {
                     }
                 }
             }
-            OnePass => unreachable!("@burntsushi what do?"),
+            OnePass => self.exec_nfa(
+                MatchNfaType::Auto, matches, &mut [], false, text, start),
             Nfa(ty) => self.exec_nfa(ty, matches, &mut [], false, text, start),
             Nothing => false,
         }
